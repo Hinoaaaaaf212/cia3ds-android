@@ -372,22 +372,35 @@ CiaInfo run_ctrtool_info(const std::string &input_path,
     return out;
 }
 
+struct Partition {
+    std::string path;
+    int slot;       // NCSD partition slot (0..7)
+    uint32_t content_id; // CIA TMD content_id, may be non-sequential
+};
+
 bool list_extracted_partitions(const std::string &dir_path,
-                               std::vector<std::string> &out) {
+                               std::vector<Partition> &out) {
     DIR *d = opendir(dir_path.c_str());
     if (!d) return false;
     struct dirent *e;
+    // ctrtool --contents=<prefix> writes "<prefix>.NNNN.HHHHHHHH" files where
+    // NNNN is the partition slot and HHHHHHHH is the lower 32 bits of the
+    // content id (hex). We parse both because makerom's -i flag wants both.
+    std::regex re(R"(^c\.([0-9]{4})\.([0-9a-fA-F]{8})$)");
     while ((e = readdir(d)) != nullptr) {
         std::string name = e->d_name;
         if (name == "." || name == "..") continue;
-        // ctrtool writes content files like c.0000.00000000 and
-        // c.0001.00000001 etc. inside the chosen --contents directory.
-        if (name.find("c.") == 0) {
-            out.push_back(dir_path + "/" + name);
-        }
+        std::smatch m;
+        if (!std::regex_match(name, m, re)) continue;
+        Partition p;
+        p.path = dir_path + "/" + name;
+        p.slot = std::stoi(m[1].str(), nullptr, 10);
+        p.content_id = (uint32_t)std::stoul(m[2].str(), nullptr, 16);
+        out.push_back(std::move(p));
     }
     closedir(d);
-    std::sort(out.begin(), out.end());
+    std::sort(out.begin(), out.end(),
+              [](const Partition &a, const Partition &b) { return a.slot < b.slot; });
     return !out.empty();
 }
 
@@ -522,7 +535,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         }
     }
 
-    std::vector<std::string> partitions;
+    std::vector<Partition> partitions;
     if (!list_extracted_partitions(contents_dir, partitions)) {
         sink.emitf("ERR: no partitions extracted in %s", contents_dir.c_str());
         // Dump what's actually there to help diagnose.
@@ -538,14 +551,16 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         return 6;
     }
     sink.emitf("extracted %zu partition(s)", partitions.size());
-    for (auto &p : partitions) sink.emitf("  %s", p.c_str());
+    for (auto &p : partitions) {
+        sink.emitf("  slot=%d id=0x%08x %s", p.slot, p.content_id, p.path.c_str());
+    }
 
     progress.post(60, "Marking partitions decrypted");
     for (auto &p : partitions) {
-        int rc = ncch_flags_mark_decrypted(p.c_str());
+        int rc = ncch_flags_mark_decrypted(p.path.c_str());
         if (rc != 0) {
             sink.emitf("ncch_flags_mark_decrypted(%s) -> %d (%s) [non-fatal]",
-                       p.c_str(), rc, strerror(rc));
+                       p.path.c_str(), rc, strerror(rc));
         }
     }
 
@@ -561,11 +576,14 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         if (info.kind == CiaKind::DLC) {
             argv.push("-dlc");
         }
-        for (size_t i = 0; i < partitions.size(); ++i) {
-            std::string spec = partitions[i] + ":" + std::to_string(i)
-                             + ":" + std::to_string(i);
+        for (auto &p : partitions) {
+            // makerom -i <file>:<index>:<id>
+            //   index = NCSD partition slot
+            //   id    = CIA TMD content id (must match what was in the source)
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%d:0x%08x", p.slot, p.content_id);
             argv.push("-i");
-            argv.push(spec);
+            argv.push(p.path + ":" + buf);
         }
         if (!info.title_version.empty()) {
             argv.push("-ver");
