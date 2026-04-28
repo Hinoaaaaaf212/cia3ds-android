@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CIA Decryptor</string>
+    <string name="nav_single">Single</string>
+    <string name="nav_batch">Batch</string>
+    <string name="nav_about">About</string>
+
+    <string name="single_title">Decrypt one file</string>
+    <string name="single_pick">Choose a .cia or .3ds file</string>
+    <string name="single_decrypt">Decrypt</string>
+    <string name="single_save_as">Save decrypted file</string>
+    <string name="single_share">Share</string>
+    <string name="single_idle">Pick a file to begin.</string>
+    <string name="single_done">Done. Decrypted file ready.</string>
+
+    <string name="batch_title">Batch decrypt a folder</string>
+    <string name="batch_pick_folder">Choose source folder</string>
+    <string name="batch_decrypt_all">Decrypt all</string>
+    <string name="batch_idle">No folder selected.</string>
+    <string name="batch_no_files">No .cia or .3ds files found in this folder.</string>
+    <string name="batch_output_subfolder">Decrypted</string>
+    <string name="batch_progress">%1$d / %2$d</string>
+
+    <string name="about_title">About</string>
+    <string name="about_version">Version %1$s</string>
+    <string name="about_blurb">Open-source on-device decryptor for Nintendo 3DS .cia and .3ds files.</string>
+    <string name="about_attribution">Built on ctrtool and makerom by 3DSGuy/Project_CTR (MIT). seeddb.bin maintained by ihavamac. Original Windows tool by matiffeder; redux by xxmichibxx.</string>
+    <string name="about_license">MIT License</string>
+
+    <string name="error_generic">Decryption failed: %1$s</string>
+    <string name="error_already_decrypted">Already decrypted; skipped.</string>
+    <string name="error_unsupported">Unsupported file type.</string>
+
+    <string name="notif_channel_id">decrypt</string>
+    <string name="notif_channel_name">Decryption progress</string>
+    <string name="notif_title">Decrypting</string>
+    <string name="notif_text">%1$d / %2$d files</string>
+</resources>

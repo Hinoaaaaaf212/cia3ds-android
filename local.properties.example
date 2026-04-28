@@ -1,0 +1,3 @@
+# Copy this file to local.properties and fill in your Android SDK location.
+# This file should NOT be committed.
+sdk.dir=C\:\\Users\\YOURUSER\\AppData\\Local\\Android\\Sdk

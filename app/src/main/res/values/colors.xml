@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="seed_primary">#FF1F6FEB</color>
+    <color name="seed_background">#FFF7F7FA</color>
+    <color name="seed_on_primary">#FFFFFFFF</color>
+    <color name="seed_surface">#FFFFFFFF</color>
+    <color name="seed_on_surface">#FF111418</color>
+    <color name="tv_banner_bg">#FF0E2A55</color>
+</resources>
