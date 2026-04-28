@@ -89,34 +89,52 @@ fun SingleScreen() {
         logLines.clear()
         logLines += "tap Decrypt: input=${inputName ?: "?"} format=${format.extension}"
         scope.launch {
-            Cia3ds.get(ctx).decryptAsFlow(
-                input = inUri,
-                output = outUri,
-                format = format,
-                originalName = inputName ?: "input",
-            ).collectLatest { upd ->
-                when (upd) {
-                    is DecryptUpdate.Progress -> {
-                        percent = upd.percent
-                        status = upd.message
-                    }
-                    is DecryptUpdate.Log -> {
-                        logLines += upd.line
-                        if (logLines.size > MAX_LOG_LINES) {
-                            logLines.removeAt(0)
+            val engine = runCatching { Cia3ds.get(ctx) }
+                .onFailure { t ->
+                    Log.e(TAG, "Cia3ds.get failed", t)
+                    logLines += "ERR: failed to load native engine: ${t.message}"
+                    isRunning = false
+                    lastResult = DecryptResult.Failure(t.message ?: "load failed")
+                    status = ctx.getString(R.string.error_generic, lastResult.toString())
+                }
+                .getOrNull() ?: return@launch
+            try {
+                engine.decryptAsFlow(
+                    input = inUri,
+                    output = outUri,
+                    format = format,
+                    originalName = inputName ?: "input",
+                ).collectLatest { upd ->
+                    when (upd) {
+                        is DecryptUpdate.Progress -> {
+                            percent = upd.percent
+                            status = upd.message
                         }
-                    }
-                    is DecryptUpdate.Finished -> {
-                        isRunning = false
-                        lastResult = upd.result
-                        Log.i(TAG, "decrypt finished: ${upd.result}")
-                        status = when (val r = upd.result) {
-                            is DecryptResult.Success -> ctx.getString(R.string.single_done)
-                            is DecryptResult.AlreadyDecrypted -> ctx.getString(R.string.error_already_decrypted)
-                            is DecryptResult.Failure -> ctx.getString(R.string.error_generic, r.message)
+                        is DecryptUpdate.Log -> {
+                            logLines += upd.line
+                            if (logLines.size > MAX_LOG_LINES) {
+                                logLines.removeAt(0)
+                            }
+                        }
+                        is DecryptUpdate.Finished -> {
+                            isRunning = false
+                            lastResult = upd.result
+                            Log.i(TAG, "decrypt finished: ${upd.result}")
+                            status = when (val r = upd.result) {
+                                is DecryptResult.Success -> ctx.getString(R.string.single_done)
+                                is DecryptResult.AlreadyDecrypted -> ctx.getString(R.string.error_already_decrypted)
+                                is DecryptResult.Failure -> ctx.getString(R.string.error_generic, r.message)
+                            }
                         }
                     }
                 }
+            } catch (t: Throwable) {
+                Log.e(TAG, "decrypt flow threw", t)
+                logLines += "ERR: ${t.javaClass.simpleName}: ${t.message}"
+                t.stackTrace.take(8).forEach { logLines += "  at $it" }
+                isRunning = false
+                lastResult = DecryptResult.Failure(t.message ?: t.javaClass.simpleName)
+                status = ctx.getString(R.string.error_generic, lastResult.toString())
             }
         }
     }
