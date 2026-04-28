@@ -80,6 +80,47 @@ fun SingleScreen() {
         }
     }
 
+    fun launchDecrypt(inUri: Uri, outUri: Uri) {
+        Log.i(TAG, "decrypt: input=$inUri output=$outUri format=$format")
+        isRunning = true
+        percent = 0
+        status = ""
+        lastResult = null
+        logLines.clear()
+        logLines += "tap Decrypt: input=${inputName ?: "?"} format=${format.extension}"
+        scope.launch {
+            Cia3ds.get(ctx).decryptAsFlow(
+                input = inUri,
+                output = outUri,
+                format = format,
+                originalName = inputName ?: "input",
+            ).collectLatest { upd ->
+                when (upd) {
+                    is DecryptUpdate.Progress -> {
+                        percent = upd.percent
+                        status = upd.message
+                    }
+                    is DecryptUpdate.Log -> {
+                        logLines += upd.line
+                        if (logLines.size > MAX_LOG_LINES) {
+                            logLines.removeAt(0)
+                        }
+                    }
+                    is DecryptUpdate.Finished -> {
+                        isRunning = false
+                        lastResult = upd.result
+                        Log.i(TAG, "decrypt finished: ${upd.result}")
+                        status = when (val r = upd.result) {
+                            is DecryptResult.Success -> ctx.getString(R.string.single_done)
+                            is DecryptResult.AlreadyDecrypted -> ctx.getString(R.string.error_already_decrypted)
+                            is DecryptResult.Failure -> ctx.getString(R.string.error_generic, r.message)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     val pickOutput = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
@@ -91,6 +132,8 @@ fun SingleScreen() {
                 )
             }.onFailure { Log.w(TAG, "takePersistableUriPermission(write) failed: ${it.message}") }
             output = uri
+            // Don't make the user tap a second button — just decrypt now.
+            input?.let { inUri -> launchDecrypt(inUri, uri) }
         }
     }
 
@@ -138,9 +181,9 @@ fun SingleScreen() {
 
                 val readiness = when {
                     input == null -> "Pick a .cia or .3ds file to begin."
-                    output == null -> "Tap 'Save decrypted file' to choose where to write the result."
                     isRunning -> "Decrypting…"
                     lastResult is DecryptResult.Success -> "Done. Pick a new file or save again to re-run."
+                    output == null -> "Tap 'Decrypt and save…' — you'll choose where to write the result."
                     else -> "Ready to decrypt."
                 }
                 Text(readiness, style = MaterialTheme.typography.bodySmall)
@@ -149,52 +192,9 @@ fun SingleScreen() {
                     enabled = input != null && output != null && !isRunning,
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        val inUri = input ?: run {
-                            Log.w(TAG, "decrypt clicked with null input")
-                            return@Button
-                        }
-                        val outUri = output ?: run {
-                            Log.w(TAG, "decrypt clicked with null output")
-                            return@Button
-                        }
-                        Log.i(TAG, "decrypt: input=$inUri output=$outUri format=$format")
-                        isRunning = true
-                        percent = 0
-                        status = ""
-                        lastResult = null
-                        logLines.clear()
-                        logLines += "tap Decrypt: input=${inputName ?: "?"} format=${format.extension}"
-                        scope.launch {
-                            Cia3ds.get(ctx).decryptAsFlow(
-                                input = inUri,
-                                output = outUri,
-                                format = format,
-                                originalName = inputName ?: "input",
-                            ).collectLatest { upd ->
-                                when (upd) {
-                                    is DecryptUpdate.Progress -> {
-                                        percent = upd.percent
-                                        status = upd.message
-                                    }
-                                    is DecryptUpdate.Log -> {
-                                        logLines += upd.line
-                                        if (logLines.size > MAX_LOG_LINES) {
-                                            logLines.removeAt(0)
-                                        }
-                                    }
-                                    is DecryptUpdate.Finished -> {
-                                        isRunning = false
-                                        lastResult = upd.result
-                                        Log.i(TAG, "decrypt finished: ${upd.result}")
-                                        status = when (val r = upd.result) {
-                                            is DecryptResult.Success -> ctx.getString(R.string.single_done)
-                                            is DecryptResult.AlreadyDecrypted -> ctx.getString(R.string.error_already_decrypted)
-                                            is DecryptResult.Failure -> ctx.getString(R.string.error_generic, r.message)
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        val inUri = input ?: return@Button
+                        val outUri = output ?: return@Button
+                        launchDecrypt(inUri, outUri)
                     },
                 ) { Text(stringResource(R.string.single_decrypt)) }
             }

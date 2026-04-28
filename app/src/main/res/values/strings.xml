@@ -8,7 +8,7 @@
     <string name="single_title">Decrypt one file</string>
     <string name="single_pick">Choose a .cia or .3ds file</string>
     <string name="single_decrypt">Decrypt</string>
-    <string name="single_save_as">Save decrypted file</string>
+    <string name="single_save_as">Decrypt and save…</string>
     <string name="single_share">Share</string>
     <string name="single_idle">Pick a file to begin.</string>
     <string name="single_done">Done. Decrypted file ready.</string>
