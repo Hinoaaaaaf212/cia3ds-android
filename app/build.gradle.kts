@@ -6,13 +6,13 @@ plugins {
 
 android {
     namespace = "io.github.cia3ds"
-    compileSdk = 34
+    compileSdk = 36
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "io.github.cia3ds"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
 

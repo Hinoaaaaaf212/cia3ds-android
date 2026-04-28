@@ -1,0 +1,21 @@
+cia3ds-android — Android port of the Batch CIA 3DS Decryptor
+
+This product includes software developed by:
+
+- ctrtool and makerom (https://github.com/3DSGuy/Project_CTR), MIT License
+  Copyright (c) 2014 3DSGuy / 2014 applestash / 2015-2022 Jakcron
+- libtoolchain, libfmt, libnintendo-n3ds, libbroadon-es (vendored under
+  ctrtool/deps/), MIT License
+- libblz, libyaml (vendored under makerom/deps/), MIT and similar permissive
+  licenses
+- mbedTLS 2.x (3DSGuy fork, vendored under ctrtool/deps/libmbedtls and
+  makerom/deps/libmbedtls), Apache License 2.0
+
+The bundled seeddb.bin is a community-maintained encryption-seed database
+maintained by ihavamac and contributors. The original Windows tool that
+inspired this port is "Batch CIA 3DS Decryptor" by matiffeder, with the
+"Redux" rewrite by xxmichibxx.
+
+The closed-source decrypt.exe shipped with the original Redux distribution
+has been replaced in this port by an open-source NCCH-flags patcher
+(native/patch/ncch_flags.c, MIT License).
