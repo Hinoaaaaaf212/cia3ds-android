@@ -108,21 +108,31 @@ struct LogSink {
 
     void emitBlock(const std::string &text) const {
         // Split a multi-line capture into individual lines so the UI can show
-        // each as a separate log row.
+        // each as a separate log row. Wrap in a local frame because emit()
+        // creates a jstring per line and ctrtool/makerom output can be tens
+        // of thousands of lines, blowing the 512-entry local-ref table.
+        if (env) env->PushLocalFrame(16);
         size_t start = 0;
+        size_t emitted = 0;
         while (start < text.size()) {
             size_t nl = text.find('\n', start);
             std::string line = (nl == std::string::npos)
                                ? text.substr(start)
                                : text.substr(start, nl - start);
-            // Trim trailing CR for Windows-built tooling output.
             while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
                 line.pop_back();
             }
-            if (!line.empty()) emit(line);
+            if (!line.empty()) {
+                emit(line);
+                if (env && (++emitted % 64) == 0) {
+                    env->PopLocalFrame(nullptr);
+                    env->PushLocalFrame(16);
+                }
+            }
             if (nl == std::string::npos) break;
             start = nl + 1;
         }
+        if (env) env->PopLocalFrame(nullptr);
     }
 };
 
@@ -425,6 +435,14 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         sink.onLine = env->GetMethodID(cls, "onLine", "(Ljava/lang/String;)V");
         env->DeleteLocalRef(cls);
     }
+
+    // Outer local frame so any leaked jstring during error paths is freed
+    // when the JNI call returns. RAII guard so every return path pops it.
+    struct LocalFrameGuard {
+        JNIEnv *e;
+        LocalFrameGuard(JNIEnv *e, jint cap) : e(e) { e->PushLocalFrame(cap); }
+        ~LocalFrameGuard() { e->PopLocalFrame(nullptr); }
+    } _frame{env, 64};
 
     sink.emitf("== cia3ds: decrypt %s (wantCci=%d) ==",
                orig_name.c_str(), (int)wantCci);
