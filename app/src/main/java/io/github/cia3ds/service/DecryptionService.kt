@@ -47,17 +47,38 @@ class DecryptionService : Service() {
     fun startBatch(items: List<BatchItem>, format: OutputFormat) {
         if (batchJob?.isActive == true) return
         startForegroundCompat(items.size, 0)
-        _state.value = BatchState.Running(0, items.size, "", emptyList())
+        _state.value = BatchState.Running(0, items.size, "", emptyList(), emptyList())
         batchJob = scope.launch {
             val engine = Cia3ds.get(this@DecryptionService)
             val results = mutableListOf<BatchResult>()
             items.forEachIndexed { index, item ->
-                _state.value = BatchState.Running(index, items.size, item.displayName, results.toList())
+                val currentLog = mutableListOf<String>()
+                fun publish() {
+                    _state.value = BatchState.Running(
+                        index = index,
+                        total = items.size,
+                        currentName = item.displayName,
+                        finishedSoFar = results.toList(),
+                        currentLog = currentLog.toList(),
+                    )
+                }
+                publish()
                 updateNotification(items.size, index)
                 val r = runCatching {
-                    engine.decrypt(item.input, item.output, format, item.displayName) { _, _ -> }
+                    engine.decrypt(
+                        input = item.input,
+                        output = item.output,
+                        format = format,
+                        originalName = item.displayName,
+                        progressEmit = { _, _ -> },
+                        logEmit = { line ->
+                            currentLog += line
+                            if (currentLog.size > MAX_PER_FILE_LOG) currentLog.removeAt(0)
+                            publish()
+                        },
+                    )
                 }.getOrElse { DecryptResult.Failure(it.message ?: "crash") }
-                results += BatchResult(item.displayName, r)
+                results += BatchResult(item.displayName, r, currentLog.toList())
             }
             _state.value = BatchState.Done(results.toList())
             stopForegroundCompat()
@@ -132,7 +153,11 @@ data class BatchItem(
     val displayName: String,
 )
 
-data class BatchResult(val name: String, val result: DecryptResult)
+data class BatchResult(
+    val name: String,
+    val result: DecryptResult,
+    val log: List<String> = emptyList(),
+)
 
 sealed interface BatchState {
     data object Idle : BatchState
@@ -141,6 +166,9 @@ sealed interface BatchState {
         val total: Int,
         val currentName: String,
         val finishedSoFar: List<BatchResult>,
+        val currentLog: List<String>,
     ) : BatchState
     data class Done(val results: List<BatchResult>) : BatchState
 }
+
+private const val MAX_PER_FILE_LOG = 2000

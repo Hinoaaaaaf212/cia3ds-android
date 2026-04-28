@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -57,6 +58,7 @@ fun SingleScreen() {
     var percent by remember { mutableStateOf(0) }
     var isRunning by remember { mutableStateOf(false) }
     var lastResult by remember { mutableStateOf<DecryptResult?>(null) }
+    val logLines = remember { mutableStateListOf<String>() }
 
     val pickInput = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -71,6 +73,7 @@ fun SingleScreen() {
             lastResult = null
             status = ""
             percent = 0
+            logLines.clear()
         }
     }
 
@@ -135,6 +138,7 @@ fun SingleScreen() {
                 isRunning = true
                 percent = 0
                 status = ""
+                logLines.clear()
                 scope.launch {
                     Cia3ds.get(ctx).decryptAsFlow(
                         input = inUri,
@@ -146,6 +150,12 @@ fun SingleScreen() {
                             is DecryptUpdate.Progress -> {
                                 percent = upd.percent
                                 status = upd.message
+                            }
+                            is DecryptUpdate.Log -> {
+                                logLines += upd.line
+                                if (logLines.size > MAX_LOG_LINES) {
+                                    logLines.removeAt(0)
+                                }
                             }
                             is DecryptUpdate.Finished -> {
                                 isRunning = false
@@ -185,5 +195,19 @@ fun SingleScreen() {
                 ctx.startActivity(Intent.createChooser(send, "Share decrypted file"))
             }) { Text(stringResource(R.string.single_share)) }
         }
+
+        if (logLines.isNotEmpty()) {
+            LogPanel(
+                lines = logLines,
+                onCopy = {
+                    val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                    cm?.setPrimaryClip(
+                        android.content.ClipData.newPlainText("cia3ds log", logLines.joinToString("\n"))
+                    )
+                },
+            )
+        }
     }
 }
+
+private const val MAX_LOG_LINES = 2000

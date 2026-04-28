@@ -150,6 +150,7 @@ fun BatchScreen() {
 
 @Composable
 private fun BatchStateBlock(state: BatchState?, total: Int) {
+    val ctx = LocalContext.current
     when (state) {
         null, BatchState.Idle -> {}
         is BatchState.Running -> {
@@ -162,15 +163,58 @@ private fun BatchStateBlock(state: BatchState?, total: Int) {
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(state.currentName, style = MaterialTheme.typography.bodySmall)
+            if (state.currentLog.isNotEmpty()) {
+                LogPanel(
+                    lines = state.currentLog,
+                    title = state.currentName,
+                    onCopy = {
+                        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                        cm?.setPrimaryClip(
+                            android.content.ClipData.newPlainText(
+                                "cia3ds log",
+                                state.currentLog.joinToString("\n"),
+                            )
+                        )
+                    },
+                )
+            }
         }
         is BatchState.Done -> {
             val ok = state.results.count { it.result is DecryptResult.Success }
             val skipped = state.results.count { it.result is DecryptResult.AlreadyDecrypted }
             val failed = state.results.size - ok - skipped
             Text("Done: $ok ok / $skipped skipped / $failed failed", fontWeight = FontWeight.Medium)
-            state.results.filter { it.result is DecryptResult.Failure }.forEach { r ->
-                val msg = (r.result as DecryptResult.Failure).message
-                Text("• ${r.name}: $msg", style = MaterialTheme.typography.bodySmall)
+            state.results.forEach { r ->
+                val color = when (r.result) {
+                    is DecryptResult.Success -> MaterialTheme.colorScheme.onSurface
+                    is DecryptResult.AlreadyDecrypted -> MaterialTheme.colorScheme.tertiary
+                    is DecryptResult.Failure -> MaterialTheme.colorScheme.error
+                }
+                val tag = when (val rr = r.result) {
+                    is DecryptResult.Success -> "ok"
+                    is DecryptResult.AlreadyDecrypted -> "skipped"
+                    is DecryptResult.Failure -> rr.message
+                }
+                Text(
+                    "• ${r.name}: $tag",
+                    color = color,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (r.result is DecryptResult.Failure && r.log.isNotEmpty()) {
+                    LogPanel(
+                        lines = r.log,
+                        title = "${r.name} log",
+                        onCopy = {
+                            val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                            cm?.setPrimaryClip(
+                                android.content.ClipData.newPlainText(
+                                    "cia3ds log",
+                                    r.log.joinToString("\n"),
+                                )
+                            )
+                        },
+                    )
+                }
             }
         }
     }

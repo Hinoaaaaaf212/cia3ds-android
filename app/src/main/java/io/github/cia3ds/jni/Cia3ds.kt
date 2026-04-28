@@ -37,6 +37,7 @@ class Cia3ds private constructor(private val appCtx: Context) {
         originalName: String,
         wantCci: Boolean,
         progress: NativeProgressCallback?,
+        log: NativeLogCallback?,
     ): Int
 
     private external fun nativeVersion(): String
@@ -55,6 +56,7 @@ class Cia3ds private constructor(private val appCtx: Context) {
         format: OutputFormat,
         originalName: String,
         progressEmit: (Int, String) -> Unit,
+        logEmit: (String) -> Unit = {},
     ): DecryptResult = withContext(Dispatchers.IO) {
         ensureSeedDb()
         val seedDbPath = seedDbFile().absolutePath
@@ -73,7 +75,8 @@ class Cia3ds private constructor(private val appCtx: Context) {
             // Run on a single, dedicated thread because ctrtool/makerom are not reentrant.
             val rc = suspendCancellableCoroutine<Int> { cont ->
                 val t = Thread({
-                    val cb = NativeProgressCallback { pct, msg -> progressEmit(pct, msg) }
+                    val pcb = NativeProgressCallback { pct, msg -> progressEmit(pct, msg) }
+                    val lcb = NativeLogCallback { line -> logEmit(line) }
                     val code = nativeDecryptCia(
                         inPfd.fd,
                         outPfd.fd,
@@ -81,7 +84,8 @@ class Cia3ds private constructor(private val appCtx: Context) {
                         tmpDir,
                         originalName,
                         format.useNcsdRebuild,
-                        cb,
+                        pcb,
+                        lcb,
                     )
                     if (cont.isActive) cont.resume(code)
                 }, "cia3ds-engine")
@@ -108,9 +112,14 @@ class Cia3ds private constructor(private val appCtx: Context) {
         format: OutputFormat,
         originalName: String,
     ): Flow<DecryptUpdate> = callbackFlow {
-        val result = decrypt(input, output, format, originalName) { pct, msg ->
-            trySend(DecryptUpdate.Progress(pct, msg))
-        }
+        val result = decrypt(
+            input = input,
+            output = output,
+            format = format,
+            originalName = originalName,
+            progressEmit = { pct, msg -> trySend(DecryptUpdate.Progress(pct, msg)) },
+            logEmit = { line -> trySend(DecryptUpdate.Log(line)) },
+        )
         send(DecryptUpdate.Finished(result))
         close()
     }.flowOn(Dispatchers.IO)
@@ -147,6 +156,11 @@ fun interface NativeProgressCallback {
     fun onProgress(percent: Int, message: String)
 }
 
+/** Callable from native code via JNI; receives one log line per call. */
+fun interface NativeLogCallback {
+    fun onLine(line: String)
+}
+
 sealed interface DecryptResult {
     data object Success : DecryptResult
     data object AlreadyDecrypted : DecryptResult
@@ -155,6 +169,7 @@ sealed interface DecryptResult {
 
 sealed interface DecryptUpdate {
     data class Progress(val percent: Int, val message: String) : DecryptUpdate
+    data class Log(val line: String) : DecryptUpdate
     data class Finished(val result: DecryptResult) : DecryptUpdate
 }
 

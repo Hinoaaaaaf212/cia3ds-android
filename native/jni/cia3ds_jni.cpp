@@ -82,6 +82,50 @@ struct ProgressReporter {
     }
 };
 
+struct LogSink {
+    JNIEnv *env;
+    jobject callback;
+    jmethodID onLine;
+
+    void emit(const std::string &line) const {
+        // Always echo to logcat so users (and bug reports) see it.
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", line.c_str());
+        if (!callback || !onLine) return;
+        jstring jline = env->NewStringUTF(line.c_str());
+        env->CallVoidMethod(callback, onLine, jline);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(jline);
+    }
+
+    void emitf(const char *fmt, ...) const __attribute__((format(printf, 2, 3))) {
+        char buf[1024];
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        emit(buf);
+    }
+
+    void emitBlock(const std::string &text) const {
+        // Split a multi-line capture into individual lines so the UI can show
+        // each as a separate log row.
+        size_t start = 0;
+        while (start < text.size()) {
+            size_t nl = text.find('\n', start);
+            std::string line = (nl == std::string::npos)
+                               ? text.substr(start)
+                               : text.substr(start, nl - start);
+            // Trim trailing CR for Windows-built tooling output.
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+                line.pop_back();
+            }
+            if (!line.empty()) emit(line);
+            if (nl == std::string::npos) break;
+            start = nl + 1;
+        }
+    }
+};
+
 // Helper: construct a vector<char*> argv from a string list, plus a sentinel.
 class Argv {
 public:
@@ -275,15 +319,17 @@ CiaKind classify_kind(const std::string &title_id_hex) {
 
 CiaInfo run_ctrtool_info(const std::string &input_path,
                          const std::string &seeddb_path,
-                         const std::string &capture_path) {
+                         const std::string &capture_path,
+                         const LogSink &sink) {
     CiaInfo out;
+    sink.emitf("$ ctrtool --info --seeddb=%s %s",
+               seeddb_path.c_str(), input_path.c_str());
     StdoutCapture cap(capture_path);
     Argv argv({"ctrtool", "--info", "--seeddb=" + seeddb_path, input_path});
     int rc = ctrtool_main(argv.size(), argv.data(), nullptr);
     std::string text = cap.read();
-    if (rc != 0) {
-        LOGW("ctrtool --info exit=%d output:\n%s", rc, text.c_str());
-    }
+    sink.emitBlock(text);
+    sink.emitf("[ctrtool --info exit=%d]", rc);
 
     // Parse "Title id:" or "Title ID:" (case varies between CIA and CCI).
     // We accept the first 16 hex chars after the colon.
@@ -354,7 +400,8 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     jint inFd, jint outFd,
     jstring jSeedDb, jstring jTmpDir,
     jstring jOriginalName, jboolean wantCci,
-    jobject progressCallback) {
+    jobject progressCallback,
+    jobject logCallback) {
 
     const char *seeddb_c = env->GetStringUTFChars(jSeedDb, nullptr);
     const char *tmp_c    = env->GetStringUTFChars(jTmpDir, nullptr);
@@ -372,42 +419,74 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         progress.onProgress = env->GetMethodID(cls, "onProgress", "(ILjava/lang/String;)V");
         env->DeleteLocalRef(cls);
     }
+    LogSink sink{env, logCallback, nullptr};
+    if (logCallback) {
+        jclass cls = env->GetObjectClass(logCallback);
+        sink.onLine = env->GetMethodID(cls, "onLine", "(Ljava/lang/String;)V");
+        env->DeleteLocalRef(cls);
+    }
 
-    if (!make_dir_p(tmp_dir)) return 1;
+    sink.emitf("== cia3ds: decrypt %s (wantCci=%d) ==",
+               orig_name.c_str(), (int)wantCci);
+
+    if (!make_dir_p(tmp_dir)) {
+        sink.emitf("ERR: cannot create tmp dir %s", tmp_dir.c_str());
+        return 1;
+    }
     std::string work = tmp_dir + "/work";
     rmtree(work);
-    if (!make_dir_p(work)) return 1;
+    if (!make_dir_p(work)) {
+        sink.emitf("ERR: cannot create work dir %s", work.c_str());
+        return 1;
+    }
 
     std::string input_path  = work + "/input.bin";
     std::string output_path = work + "/output.bin";
     std::string contents_dir = work + "/contents";
     std::string log_path = work + "/tool.log";
-    if (!make_dir_p(contents_dir)) return 1;
+    if (!make_dir_p(contents_dir)) {
+        sink.emitf("ERR: cannot create contents dir %s", contents_dir.c_str());
+        return 1;
+    }
 
     progress.post(2, "Staging input");
     if (!copy_fd_to_path(inFd, input_path)) {
-        LOGE("failed to stage input fd to %s", input_path.c_str());
+        sink.emitf("ERR: failed to stage input fd to %s", input_path.c_str());
         return 2;
+    }
+    {
+        struct stat st;
+        if (stat(input_path.c_str(), &st) == 0) {
+            sink.emitf("staged input: %lld bytes",
+                       (long long)st.st_size);
+        }
     }
 
     progress.post(10, "Reading metadata");
-    CiaInfo info = run_ctrtool_info(input_path, seeddb_path, log_path);
-    LOGI("title=%s version=%s kind=%d already=%d is_3ds=%d",
-         info.title_id.c_str(), info.title_version.c_str(),
-         (int)info.kind, info.already_decrypted, info.is_3ds);
+    CiaInfo info = run_ctrtool_info(input_path, seeddb_path, log_path, sink);
+    sink.emitf("metadata: title=%s version=%s kind=%d already=%d is_3ds=%d",
+               info.title_id.empty() ? "(unknown)" : info.title_id.c_str(),
+               info.title_version.c_str(),
+               (int)info.kind, (int)info.already_decrypted, (int)info.is_3ds);
 
     if (info.already_decrypted) {
         progress.post(100, "Already decrypted; nothing to do.");
-        // We still copy the input to the output so the user gets a file.
-        if (!copy_path_to_fd(input_path, outFd)) return 4;
+        sink.emit("input is already decrypted; copying input to output");
+        if (!copy_path_to_fd(input_path, outFd)) {
+            sink.emit("ERR: copy of input to output fd failed");
+            return 4;
+        }
         rmtree(work);
         return 10; // sentinel: "already decrypted"
     }
 
     progress.post(20, "Extracting partitions");
     {
-        StdoutCapture cap(log_path);
         std::string contents_prefix = contents_dir + "/c";
+        sink.emitf("$ ctrtool --seeddb=%s --contents=%s %s",
+                   seeddb_path.c_str(), contents_prefix.c_str(),
+                   input_path.c_str());
+        StdoutCapture cap(log_path);
         Argv argv({
             "ctrtool",
             "--seeddb=" + seeddb_path,
@@ -415,33 +494,43 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             input_path,
         });
         int rc = ctrtool_main(argv.size(), argv.data(), nullptr);
+        std::string out = cap.read();
+        sink.emitBlock(out);
+        sink.emitf("[ctrtool extract exit=%d]", rc);
         if (rc != 0) {
-            std::string out = cap.read();
-            LOGE("ctrtool extract failed (%d):\n%s", rc, out.c_str());
             return 5;
         }
     }
 
     std::vector<std::string> partitions;
     if (!list_extracted_partitions(contents_dir, partitions)) {
-        LOGE("no partitions extracted in %s", contents_dir.c_str());
+        sink.emitf("ERR: no partitions extracted in %s", contents_dir.c_str());
+        // Dump what's actually there to help diagnose.
+        DIR *d = opendir(contents_dir.c_str());
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) != nullptr) {
+                std::string n = e->d_name;
+                if (n != "." && n != "..") sink.emitf("  contents/%s", n.c_str());
+            }
+            closedir(d);
+        }
         return 6;
     }
+    sink.emitf("extracted %zu partition(s)", partitions.size());
+    for (auto &p : partitions) sink.emitf("  %s", p.c_str());
 
     progress.post(60, "Marking partitions decrypted");
     for (auto &p : partitions) {
         int rc = ncch_flags_mark_decrypted(p.c_str());
         if (rc != 0) {
-            LOGW("ncch_flags_mark_decrypted(%s) -> %d (%s)",
-                 p.c_str(), rc, strerror(rc));
-            // Non-fatal: the partition may already be a non-NCCH content
-            // (e.g. SRL for TWL); makerom will handle it.
+            sink.emitf("ncch_flags_mark_decrypted(%s) -> %d (%s) [non-fatal]",
+                       p.c_str(), rc, strerror(rc));
         }
     }
 
     progress.post(75, "Rebuilding CIA");
     {
-        StdoutCapture cap(log_path);
         Argv argv({
             "makerom",
             "-f", "cia",
@@ -462,19 +551,34 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             argv.push("-ver");
             argv.push(info.title_version);
         }
+        // Echo full command line for transparency.
+        std::string cmd = "$";
+        for (int j = 0; j < argv.size(); ++j) cmd += " " + std::string(argv.data()[j]);
+        sink.emit(cmd);
+        StdoutCapture cap(log_path);
         int rc = makerom_main(argv.size(), argv.data());
+        std::string out = cap.read();
+        sink.emitBlock(out);
+        sink.emitf("[makerom rebuild exit=%d]", rc);
         if (rc != 0) {
-            std::string out = cap.read();
-            LOGE("makerom rebuild failed (%d):\n%s", rc, out.c_str());
             return 7;
         }
     }
 
     progress.post(90, "Saving output");
 
+    {
+        struct stat st;
+        if (stat(output_path.c_str(), &st) == 0) {
+            sink.emitf("rebuilt CIA: %lld bytes", (long long)st.st_size);
+        }
+    }
+
     std::string final_input = output_path;
     if (wantCci && info.kind == CiaKind::Game) {
         std::string cci_path = work + "/output.cci";
+        sink.emitf("$ makerom -ciatocci %s -o %s",
+                   output_path.c_str(), cci_path.c_str());
         StdoutCapture cap(log_path);
         Argv argv({
             "makerom",
@@ -482,18 +586,27 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             "-o", cci_path,
         });
         int rc = makerom_main(argv.size(), argv.data());
+        std::string out = cap.read();
+        sink.emitBlock(out);
+        sink.emitf("[makerom -ciatocci exit=%d]", rc);
         if (rc != 0) {
-            std::string out = cap.read();
-            LOGW("ciatocci failed (%d), keeping CIA:\n%s", rc, out.c_str());
+            sink.emit("WARN: ciatocci failed; keeping CIA");
         } else {
             final_input = cci_path;
         }
     }
 
+    progress.post(90, "Saving output");
     if (!copy_path_to_fd(final_input, outFd)) {
-        LOGE("copy of result to caller fd failed");
+        sink.emit("ERR: copy of result to caller fd failed");
         rmtree(work);
         return 8;
+    }
+    {
+        struct stat st;
+        if (stat(final_input.c_str(), &st) == 0) {
+            sink.emitf("wrote %lld bytes to output", (long long)st.st_size);
+        }
     }
 
     rmtree(work);
