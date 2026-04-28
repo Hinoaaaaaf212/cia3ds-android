@@ -2,6 +2,7 @@ package io.github.cia3ds.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +20,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -63,10 +63,13 @@ fun SingleScreen() {
     val pickInput = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
+        Log.i(TAG, "OpenDocument result: $uri")
         if (uri != null) {
-            ctx.contentResolver.takePersistableUriPermission(
-                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
+            runCatching {
+                ctx.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }.onFailure { Log.w(TAG, "takePersistableUriPermission(read) failed: ${it.message}") }
             input = uri
             inputName = DocumentFile.fromSingleUri(ctx, uri)?.name
             output = null
@@ -80,10 +83,13 @@ fun SingleScreen() {
     val pickOutput = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
+        Log.i(TAG, "CreateDocument result: $uri")
         if (uri != null) {
-            ctx.contentResolver.takePersistableUriPermission(
-                uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-            )
+            runCatching {
+                ctx.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }.onFailure { Log.w(TAG, "takePersistableUriPermission(write) failed: ${it.message}") }
             output = uri
         }
     }
@@ -125,52 +131,72 @@ fun SingleScreen() {
                     enabled = input != null && !isRunning,
                     onClick = {
                         val baseName = inputName?.substringBeforeLast('.') ?: "decrypted"
+                        Log.i(TAG, "save-as: launching CreateDocument for $baseName.${format.extension}")
                         pickOutput.launch("$baseName-decrypted.${format.extension}")
                     },
                 ) { Text(stringResource(R.string.single_save_as)) }
-            }
-        }
 
-        if (output != null && !isRunning && lastResult == null) {
-            Button(onClick = {
-                val inUri = input ?: return@Button
-                val outUri = output ?: return@Button
-                isRunning = true
-                percent = 0
-                status = ""
-                logLines.clear()
-                scope.launch {
-                    Cia3ds.get(ctx).decryptAsFlow(
-                        input = inUri,
-                        output = outUri,
-                        format = format,
-                        originalName = inputName ?: "input",
-                    ).collectLatest { upd ->
-                        when (upd) {
-                            is DecryptUpdate.Progress -> {
-                                percent = upd.percent
-                                status = upd.message
-                            }
-                            is DecryptUpdate.Log -> {
-                                logLines += upd.line
-                                if (logLines.size > MAX_LOG_LINES) {
-                                    logLines.removeAt(0)
-                                }
-                            }
-                            is DecryptUpdate.Finished -> {
-                                isRunning = false
-                                lastResult = upd.result
-                                status = when (val r = upd.result) {
-                                    is DecryptResult.Success -> ctx.getString(R.string.single_done)
-                                    is DecryptResult.AlreadyDecrypted -> ctx.getString(R.string.error_already_decrypted)
-                                    is DecryptResult.Failure -> ctx.getString(R.string.error_generic, r.message)
+                val readiness = when {
+                    input == null -> "Pick a .cia or .3ds file to begin."
+                    output == null -> "Tap 'Save decrypted file' to choose where to write the result."
+                    isRunning -> "Decrypting…"
+                    lastResult is DecryptResult.Success -> "Done. Pick a new file or save again to re-run."
+                    else -> "Ready to decrypt."
+                }
+                Text(readiness, style = MaterialTheme.typography.bodySmall)
+
+                Button(
+                    enabled = input != null && output != null && !isRunning,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        val inUri = input ?: run {
+                            Log.w(TAG, "decrypt clicked with null input")
+                            return@Button
+                        }
+                        val outUri = output ?: run {
+                            Log.w(TAG, "decrypt clicked with null output")
+                            return@Button
+                        }
+                        Log.i(TAG, "decrypt: input=$inUri output=$outUri format=$format")
+                        isRunning = true
+                        percent = 0
+                        status = ""
+                        lastResult = null
+                        logLines.clear()
+                        logLines += "tap Decrypt: input=${inputName ?: "?"} format=${format.extension}"
+                        scope.launch {
+                            Cia3ds.get(ctx).decryptAsFlow(
+                                input = inUri,
+                                output = outUri,
+                                format = format,
+                                originalName = inputName ?: "input",
+                            ).collectLatest { upd ->
+                                when (upd) {
+                                    is DecryptUpdate.Progress -> {
+                                        percent = upd.percent
+                                        status = upd.message
+                                    }
+                                    is DecryptUpdate.Log -> {
+                                        logLines += upd.line
+                                        if (logLines.size > MAX_LOG_LINES) {
+                                            logLines.removeAt(0)
+                                        }
+                                    }
+                                    is DecryptUpdate.Finished -> {
+                                        isRunning = false
+                                        lastResult = upd.result
+                                        Log.i(TAG, "decrypt finished: ${upd.result}")
+                                        status = when (val r = upd.result) {
+                                            is DecryptResult.Success -> ctx.getString(R.string.single_done)
+                                            is DecryptResult.AlreadyDecrypted -> ctx.getString(R.string.error_already_decrypted)
+                                            is DecryptResult.Failure -> ctx.getString(R.string.error_generic, r.message)
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                }
-            }, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.single_decrypt))
+                    },
+                ) { Text(stringResource(R.string.single_decrypt)) }
             }
         }
 
@@ -211,3 +237,4 @@ fun SingleScreen() {
 }
 
 private const val MAX_LOG_LINES = 2000
+private const val TAG = "cia3ds-ui"
