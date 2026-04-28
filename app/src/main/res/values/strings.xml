@@ -13,6 +13,11 @@
     <string name="single_idle">Pick a file to begin.</string>
     <string name="single_done">Done. Decrypted file ready.</string>
 
+    <string name="format_label">Output format</string>
+    <string name="format_desc_cia">.cia — original CIA package, decrypted in place. Safest for emulator install.</string>
+    <string name="format_desc_cci">.cci — raw NCSD cartridge image. Smaller file; only valid for game CIAs.</string>
+    <string name="format_desc_3ds">.3ds — same NCSD bytes as .cci, with the extension some emulators expect.</string>
+
     <string name="batch_title">Batch decrypt a folder</string>
     <string name="batch_pick_folder">Choose source folder</string>
     <string name="batch_decrypt_all">Decrypt all</string>

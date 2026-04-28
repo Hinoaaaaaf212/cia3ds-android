@@ -26,7 +26,9 @@ class Cia3ds private constructor(private val appCtx: Context) {
 
     /** Native entrypoint; returns 0 on success, 10 if the input was already
      *  decrypted (and the original bytes were copied to the output), or any
-     *  other non-zero value on failure. */
+     *  other non-zero value on failure. The native side treats Cci and
+     *  ThreeDs identically; the only difference at the Kotlin layer is the
+     *  suggested file extension. */
     private external fun nativeDecryptCia(
         inFd: Int,
         outFd: Int,
@@ -50,7 +52,7 @@ class Cia3ds private constructor(private val appCtx: Context) {
     suspend fun decrypt(
         input: Uri,
         output: Uri,
-        wantCci: Boolean,
+        format: OutputFormat,
         originalName: String,
         progressEmit: (Int, String) -> Unit,
     ): DecryptResult = withContext(Dispatchers.IO) {
@@ -78,7 +80,7 @@ class Cia3ds private constructor(private val appCtx: Context) {
                         seedDbPath,
                         tmpDir,
                         originalName,
-                        wantCci,
+                        format.useNcsdRebuild,
                         cb,
                     )
                     if (cont.isActive) cont.resume(code)
@@ -103,10 +105,10 @@ class Cia3ds private constructor(private val appCtx: Context) {
     fun decryptAsFlow(
         input: Uri,
         output: Uri,
-        wantCci: Boolean,
+        format: OutputFormat,
         originalName: String,
     ): Flow<DecryptUpdate> = callbackFlow {
-        val result = decrypt(input, output, wantCci, originalName) { pct, msg ->
+        val result = decrypt(input, output, format, originalName) { pct, msg ->
             trySend(DecryptUpdate.Progress(pct, msg))
         }
         send(DecryptUpdate.Finished(result))
@@ -154,4 +156,17 @@ sealed interface DecryptResult {
 sealed interface DecryptUpdate {
     data class Progress(val percent: Int, val message: String) : DecryptUpdate
     data class Finished(val result: DecryptResult) : DecryptUpdate
+}
+
+/**
+ * What to write to the user-chosen output Uri after decryption.
+ *
+ * Cci and ThreeDs produce byte-identical NCSD output via makerom -ciatocci;
+ * they only differ in the file extension we suggest to the user. CIA stays
+ * a CIA — no NCSD repack — and is the safest pick for emulator install.
+ */
+enum class OutputFormat(val extension: String, val useNcsdRebuild: Boolean) {
+    Cia("cia", false),
+    Cci("cci", true),
+    ThreeDs("3ds", true),
 }

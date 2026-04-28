@@ -19,9 +19,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -31,7 +31,6 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -40,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import io.github.cia3ds.R
 import io.github.cia3ds.jni.DecryptResult
+import io.github.cia3ds.jni.OutputFormat
 import io.github.cia3ds.service.BatchItem
 import io.github.cia3ds.service.BatchState
 import io.github.cia3ds.service.DecryptionService
@@ -51,7 +51,7 @@ fun BatchScreen() {
 
     var sourceTree by remember { mutableStateOf<Uri?>(null) }
     val files = remember { mutableStateListOf<DocumentFile>() }
-    var wantCci by remember { mutableStateOf(false) }
+    var format by remember { mutableStateOf(OutputFormat.Cia) }
 
     val pickFolder = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -92,9 +92,15 @@ fun BatchScreen() {
         } else if (files.isEmpty()) {
             Text(stringResource(R.string.batch_no_files))
         } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = wantCci, onCheckedChange = { wantCci = it })
-                Text("  Convert games to .cci")
+            Text(stringResource(R.string.format_label))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutputFormat.entries.forEach { f ->
+                    FilterChip(
+                        selected = format == f,
+                        onClick = { format = f },
+                        label = { Text(".${f.extension}") },
+                    )
+                }
             }
             Button(
                 enabled = (state?.value !is BatchState.Running),
@@ -105,8 +111,7 @@ fun BatchScreen() {
                         ?: return@Button
                     val items = files.mapNotNull { f ->
                         val baseName = f.name?.substringBeforeLast('.') ?: return@mapNotNull null
-                        val ext = if (wantCci) "cci" else "cia"
-                        val outName = "$baseName-decrypted.$ext"
+                        val outName = "$baseName-decrypted.${format.extension}"
                         val outFile = outDir.findFile(outName)?.also { it.delete() }
                             .let { outDir.createFile("application/octet-stream", outName) }
                             ?: return@mapNotNull null
@@ -118,7 +123,7 @@ fun BatchScreen() {
                     }
                     val intent = Intent(ctx, DecryptionService::class.java)
                     ctx.startForegroundService(intent)
-                    service?.startBatch(items, wantCci)
+                    service?.startBatch(items, format)
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) {

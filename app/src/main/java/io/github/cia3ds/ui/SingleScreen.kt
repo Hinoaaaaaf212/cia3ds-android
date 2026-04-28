@@ -7,18 +7,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -27,7 +25,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -37,8 +34,15 @@ import io.github.cia3ds.R
 import io.github.cia3ds.jni.Cia3ds
 import io.github.cia3ds.jni.DecryptResult
 import io.github.cia3ds.jni.DecryptUpdate
+import io.github.cia3ds.jni.OutputFormat
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+
+private fun OutputFormat.descriptionRes(): Int = when (this) {
+    OutputFormat.Cia -> R.string.format_desc_cia
+    OutputFormat.Cci -> R.string.format_desc_cci
+    OutputFormat.ThreeDs -> R.string.format_desc_3ds
+}
 
 @Composable
 fun SingleScreen() {
@@ -48,7 +52,7 @@ fun SingleScreen() {
     var input by remember { mutableStateOf<Uri?>(null) }
     var inputName by remember { mutableStateOf<String?>(null) }
     var output by remember { mutableStateOf<Uri?>(null) }
-    var wantCci by remember { mutableStateOf(false) }
+    var format by remember { mutableStateOf(OutputFormat.Cia) }
     var status by remember { mutableStateOf<String>("") }
     var percent by remember { mutableStateOf(0) }
     var isRunning by remember { mutableStateOf(false) }
@@ -100,17 +104,25 @@ fun SingleScreen() {
                 }) {
                     Text(inputName ?: stringResource(R.string.single_pick))
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(checked = wantCci, onCheckedChange = { wantCci = it })
-                    Spacer(Modifier.height(8.dp))
-                    Text("  Convert to .cci (Game CIAs only)")
+                Text(stringResource(R.string.format_label))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutputFormat.entries.forEach { f ->
+                        FilterChip(
+                            selected = format == f,
+                            onClick = { format = f },
+                            label = { Text(".${f.extension}") },
+                        )
+                    }
                 }
+                Text(
+                    stringResource(format.descriptionRes()),
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Button(
                     enabled = input != null && !isRunning,
                     onClick = {
                         val baseName = inputName?.substringBeforeLast('.') ?: "decrypted"
-                        val ext = if (wantCci) "cci" else "cia"
-                        pickOutput.launch("$baseName-decrypted.$ext")
+                        pickOutput.launch("$baseName-decrypted.${format.extension}")
                     },
                 ) { Text(stringResource(R.string.single_save_as)) }
             }
@@ -127,7 +139,7 @@ fun SingleScreen() {
                     Cia3ds.get(ctx).decryptAsFlow(
                         input = inUri,
                         output = outUri,
-                        wantCci = wantCci,
+                        format = format,
                         originalName = inputName ?: "input",
                     ).collectLatest { upd ->
                         when (upd) {

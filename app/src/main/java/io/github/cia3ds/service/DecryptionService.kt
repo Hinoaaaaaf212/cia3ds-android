@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import io.github.cia3ds.R
 import io.github.cia3ds.jni.Cia3ds
 import io.github.cia3ds.jni.DecryptResult
+import io.github.cia3ds.jni.OutputFormat
 import io.github.cia3ds.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +44,7 @@ class DecryptionService : Service() {
     private val _state = MutableStateFlow<BatchState>(BatchState.Idle)
     val state: StateFlow<BatchState> = _state.asStateFlow()
 
-    fun startBatch(items: List<BatchItem>, wantCci: Boolean) {
+    fun startBatch(items: List<BatchItem>, format: OutputFormat) {
         if (batchJob?.isActive == true) return
         startForegroundCompat(items.size, 0)
         _state.value = BatchState.Running(0, items.size, "", emptyList())
@@ -54,7 +55,7 @@ class DecryptionService : Service() {
                 _state.value = BatchState.Running(index, items.size, item.displayName, results.toList())
                 updateNotification(items.size, index)
                 val r = runCatching {
-                    engine.decrypt(item.input, item.output, wantCci, item.displayName) { _, _ -> }
+                    engine.decrypt(item.input, item.output, format, item.displayName) { _, _ -> }
                 }.getOrElse { DecryptResult.Failure(it.message ?: "crash") }
                 results += BatchResult(item.displayName, r)
             }
