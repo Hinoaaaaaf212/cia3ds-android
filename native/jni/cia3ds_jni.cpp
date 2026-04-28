@@ -378,6 +378,83 @@ struct Partition {
     uint32_t content_id; // CIA TMD content_id, may be non-sequential
 };
 
+// Splice decrypted region bytes from src_path into part_path at offset.
+// Returns true on success.
+bool splice_region(const std::string &part_path,
+                   uint64_t dst_offset,
+                   const std::string &src_path) {
+    int src = open(src_path.c_str(), O_RDONLY);
+    if (src < 0) return false;
+    int dst = open(part_path.c_str(), O_WRONLY);
+    if (dst < 0) { close(src); return false; }
+    if (lseek(dst, (off_t)dst_offset, SEEK_SET) == (off_t)-1) {
+        close(src); close(dst); return false;
+    }
+    constexpr size_t kBuf = 256 * 1024;
+    std::vector<char> buf(kBuf);
+    ssize_t n;
+    bool ok = true;
+    while ((n = read(src, buf.data(), kBuf)) > 0) {
+        ssize_t w = 0;
+        while (w < n) {
+            ssize_t k = write(dst, buf.data() + w, (size_t)(n - w));
+            if (k <= 0) { ok = false; break; }
+            w += k;
+        }
+        if (!ok) break;
+    }
+    if (n < 0) ok = false;
+    close(src);
+    close(dst);
+    return ok;
+}
+
+// NCCH header layout (offsets within the partition file):
+//   0x00  RSA-2048 signature                       (256 bytes)
+//   0x100 NcchCommonHeader                         (256 bytes)
+//     0x180 exhdr_size (u32, little-endian)
+//   ExHeader region:    file offset 0x200, size = exhdr_size + 0x400 (acex)
+//   ExeFs region:       file offset = exefs_blk_offset * 0x200, size = exefs_blk_size * 0x200
+//   RomFs region:       file offset = romfs_blk_offset * 0x200, size = romfs_blk_size * 0x200
+struct NcchRegions {
+    uint64_t exhdr_off, exhdr_size;
+    uint64_t exefs_off, exefs_size;
+    uint64_t romfs_off, romfs_size;
+};
+
+bool read_ncch_regions(const std::string &part_path, NcchRegions &out) {
+    FILE *f = fopen(part_path.c_str(), "rb");
+    if (!f) return false;
+    unsigned char hdr[0x200];
+    size_t got = fread(hdr, 1, sizeof(hdr), f);
+    fclose(f);
+    if (got != sizeof(hdr)) return false;
+    auto rd_u32 = [&](size_t off) -> uint32_t {
+        return (uint32_t)hdr[off]
+             | ((uint32_t)hdr[off+1] << 8)
+             | ((uint32_t)hdr[off+2] << 16)
+             | ((uint32_t)hdr[off+3] << 24);
+    };
+    uint32_t exhdr_size_field = rd_u32(0x180);
+    uint32_t exefs_blk_off    = rd_u32(0x1A0);
+    uint32_t exefs_blk_size   = rd_u32(0x1A4);
+    uint32_t romfs_blk_off    = rd_u32(0x1B0);
+    uint32_t romfs_blk_size   = rd_u32(0x1B4);
+    // The NCCH header includes the exheader and access_descriptor immediately
+    // after the common header. Their combined region (what ctrtool emits as
+    // --exheader) is exhdr_size + 0x400 bytes starting at file offset 0x200.
+    // BUT ctrtool's --exheader writes only the exhdr_size portion. The
+    // access_descriptor follows it; we leave it in place because it's not
+    // encrypted.
+    out.exhdr_off  = 0x200;
+    out.exhdr_size = exhdr_size_field;
+    out.exefs_off  = (uint64_t)exefs_blk_off * 0x200ULL;
+    out.exefs_size = (uint64_t)exefs_blk_size * 0x200ULL;
+    out.romfs_off  = (uint64_t)romfs_blk_off * 0x200ULL;
+    out.romfs_size = (uint64_t)romfs_blk_size * 0x200ULL;
+    return true;
+}
+
 bool list_extracted_partitions(const std::string &dir_path,
                                std::vector<Partition> &out) {
     DIR *d = opendir(dir_path.c_str());
@@ -553,6 +630,79 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     sink.emitf("extracted %zu partition(s)", partitions.size());
     for (auto &p : partitions) {
         sink.emitf("  slot=%d id=0x%08x %s", p.slot, p.content_id, p.path.c_str());
+    }
+
+    progress.post(50, "Decrypting NCCH regions");
+    for (auto &p : partitions) {
+        // 1. Read NCCH region offsets/sizes from the still-encrypted partition.
+        NcchRegions reg;
+        if (!read_ncch_regions(p.path, reg)) {
+            sink.emitf("ERR: cannot read NCCH header from %s", p.path.c_str());
+            return 9;
+        }
+        sink.emitf("partition slot=%d regions: exhdr@0x%llx(%llu) exefs@0x%llx(%llu) romfs@0x%llx(%llu)",
+                   p.slot,
+                   (unsigned long long)reg.exhdr_off, (unsigned long long)reg.exhdr_size,
+                   (unsigned long long)reg.exefs_off, (unsigned long long)reg.exefs_size,
+                   (unsigned long long)reg.romfs_off, (unsigned long long)reg.romfs_size);
+
+        // 2. Run ctrtool again on the original input, dumping just this
+        // content's decrypted regions to temp files.
+        std::string region_dir = work + "/regions_" + std::to_string(p.slot);
+        if (!make_dir_p(region_dir)) return 9;
+        std::string eh_path = region_dir + "/exheader.bin";
+        std::string ef_path = region_dir + "/exefs.bin";
+        std::string rf_path = region_dir + "/romfs.bin";
+
+        sink.emitf("$ ctrtool -n %d --exheader=%s --exefs=%s --romfs=%s --seeddb=%s %s",
+                   p.slot, eh_path.c_str(), ef_path.c_str(), rf_path.c_str(),
+                   seeddb_path.c_str(), input_path.c_str());
+        StdoutCapture cap(log_path);
+        Argv argv({
+            "ctrtool",
+            "-n", std::to_string(p.slot),
+            "--exheader=" + eh_path,
+            "--exefs=" + ef_path,
+            "--romfs=" + rf_path,
+            "--seeddb=" + seeddb_path,
+            input_path,
+        });
+        char *empty_envp2[] = {nullptr};
+        int rc = ctrtool_main(argv.size(), argv.data(), empty_envp2);
+        std::string out = cap.read();
+        sink.emitBlock(out);
+        sink.emitf("[ctrtool decrypt-regions exit=%d]", rc);
+        if (rc != 0) {
+            return 9;
+        }
+
+        // 3. Splice the decrypted regions back into the partition file at
+        //    their original offsets.
+        struct stat st;
+        if (reg.exhdr_size > 0 && stat(eh_path.c_str(), &st) == 0) {
+            sink.emitf("  splicing exheader (%lld bytes) -> 0x%llx",
+                       (long long)st.st_size, (unsigned long long)reg.exhdr_off);
+            if (!splice_region(p.path, reg.exhdr_off, eh_path)) {
+                sink.emit("ERR: failed to splice exheader");
+                return 9;
+            }
+        }
+        if (reg.exefs_size > 0 && stat(ef_path.c_str(), &st) == 0) {
+            sink.emitf("  splicing exefs (%lld bytes) -> 0x%llx",
+                       (long long)st.st_size, (unsigned long long)reg.exefs_off);
+            if (!splice_region(p.path, reg.exefs_off, ef_path)) {
+                sink.emit("ERR: failed to splice exefs");
+                return 9;
+            }
+        }
+        if (reg.romfs_size > 0 && stat(rf_path.c_str(), &st) == 0) {
+            sink.emitf("  splicing romfs (%lld bytes) -> 0x%llx",
+                       (long long)st.st_size, (unsigned long long)reg.romfs_off);
+            if (!splice_region(p.path, reg.romfs_off, rf_path)) {
+                sink.emit("ERR: failed to splice romfs");
+                return 9;
+            }
+        }
     }
 
     progress.post(60, "Marking partitions decrypted");
