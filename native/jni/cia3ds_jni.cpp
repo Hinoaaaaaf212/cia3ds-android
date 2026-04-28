@@ -336,7 +336,8 @@ CiaInfo run_ctrtool_info(const std::string &input_path,
                seeddb_path.c_str(), input_path.c_str());
     StdoutCapture cap(capture_path);
     Argv argv({"ctrtool", "--info", "--seeddb=" + seeddb_path, input_path});
-    int rc = ctrtool_main(argv.size(), argv.data(), nullptr);
+    char *empty_envp[] = {nullptr};
+    int rc = ctrtool_main(argv.size(), argv.data(), empty_envp);
     std::string text = cap.read();
     sink.emitBlock(text);
     sink.emitf("[ctrtool --info exit=%d]", rc);
@@ -511,7 +512,8 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             "--contents=" + contents_prefix,
             input_path,
         });
-        int rc = ctrtool_main(argv.size(), argv.data(), nullptr);
+        char *empty_envp[] = {nullptr};
+    int rc = ctrtool_main(argv.size(), argv.data(), empty_envp);
         std::string out = cap.read();
         sink.emitBlock(out);
         sink.emitf("[ctrtool extract exit=%d]", rc);
