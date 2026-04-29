@@ -218,15 +218,13 @@ fun SingleScreen() {
             }
         }
 
-        if (isRunning) {
-            LinearProgressIndicator(
-                progress = { (percent.coerceIn(0, 100)) / 100f },
-                modifier = Modifier.fillMaxWidth(),
+        if (isRunning || lastResult != null) {
+            ProgressCard(
+                percent = percent,
+                statusMessage = status.ifEmpty { "Working…" },
+                isRunning = isRunning,
+                lastResult = lastResult,
             )
-        }
-
-        if (status.isNotEmpty()) {
-            Text(status, style = MaterialTheme.typography.bodyMedium)
         }
 
         if (lastResult is DecryptResult.Success && output != null) {
