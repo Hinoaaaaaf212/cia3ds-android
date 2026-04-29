@@ -82,6 +82,37 @@ struct ProgressReporter {
     }
 };
 
+// Calls a Kotlin SeedFetcherCallback with a title id hex string and gets
+// back a 16-byte seed (or null). Used so the C++ side can ask Kotlin to do
+// the actual HTTPS request to Nintendo's CDN, since Android's HTTP stack is
+// already in the JVM.
+struct SeedFetcher {
+    JNIEnv *env;
+    jobject callback;
+    jmethodID onFetch;
+
+    // Returns 16 bytes on success, empty on miss.
+    std::string fetch(const std::string &tid_hex) const {
+        std::string out;
+        if (!callback || !onFetch) return out;
+        jstring jtid = env->NewStringUTF(tid_hex.c_str());
+        jbyteArray jbytes = (jbyteArray)env->CallObjectMethod(callback, onFetch, jtid);
+        env->DeleteLocalRef(jtid);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            return out;
+        }
+        if (!jbytes) return out;
+        jsize n = env->GetArrayLength(jbytes);
+        if (n > 0) {
+            out.resize((size_t)n);
+            env->GetByteArrayRegion(jbytes, 0, n, (jbyte *)out.data());
+        }
+        env->DeleteLocalRef(jbytes);
+        return out;
+    }
+};
+
 struct LogSink {
     JNIEnv *env;
     jobject callback;
@@ -502,7 +533,8 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     jstring jSeedDb, jstring jTmpDir,
     jstring jOriginalName, jboolean wantCci,
     jobject progressCallback,
-    jobject logCallback) {
+    jobject logCallback,
+    jobject seedFetcherCallback) {
 
     const char *seeddb_c = env->GetStringUTFChars(jSeedDb, nullptr);
     const char *tmp_c    = env->GetStringUTFChars(jTmpDir, nullptr);
@@ -524,6 +556,12 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     if (logCallback) {
         jclass cls = env->GetObjectClass(logCallback);
         sink.onLine = env->GetMethodID(cls, "onLine", "(Ljava/lang/String;)V");
+        env->DeleteLocalRef(cls);
+    }
+    SeedFetcher seedFetcher{env, seedFetcherCallback, nullptr};
+    if (seedFetcherCallback) {
+        jclass cls = env->GetObjectClass(seedFetcherCallback);
+        seedFetcher.onFetch = env->GetMethodID(cls, "onFetch", "(Ljava/lang/String;)[B");
         env->DeleteLocalRef(cls);
     }
 
@@ -578,6 +616,26 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
                info.title_version.c_str(),
                (int)info.kind, (int)info.already_decrypted, (int)info.is_3ds);
 
+    // Try to get a fresh per-title seed from Nintendo's CDN. If we get one,
+    // pass it via --seed=hex to subsequent ctrtool invocations as a
+    // higher-priority alternative to the bundled seeddb.bin. If the fetch
+    // fails (offline, 404), we silently fall back to seeddb-only.
+    std::string cdn_seed_hex;
+    if (!info.title_id.empty() && seedFetcherCallback) {
+        sink.emitf("seed-fetch: querying CDN for %s", info.title_id.c_str());
+        std::string raw = seedFetcher.fetch(info.title_id);
+        if (raw.size() == 16) {
+            char buf[33];
+            for (size_t i = 0; i < 16; ++i) {
+                snprintf(buf + i * 2, 3, "%02x", (unsigned char)raw[i]);
+            }
+            cdn_seed_hex = buf;
+            sink.emitf("seed-fetch: using CDN seed %s", cdn_seed_hex.c_str());
+        } else {
+            sink.emit("seed-fetch: CDN miss, falling back to bundled seeddb.bin");
+        }
+    }
+
     if (info.already_decrypted) {
         progress.post(100, "Already decrypted; nothing to do.");
         sink.emit("input is already decrypted; copying input to output");
@@ -600,8 +658,9 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             "ctrtool",
             "--seeddb=" + seeddb_path,
             "--contents=" + contents_prefix,
-            input_path,
         });
+        if (!cdn_seed_hex.empty()) argv.push("--seed=" + cdn_seed_hex);
+        argv.push(input_path);
         char *empty_envp[] = {nullptr};
     int rc = ctrtool_main(argv.size(), argv.data(), empty_envp);
         std::string out = cap.read();
@@ -665,8 +724,9 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             "--exefs=" + ef_path,
             "--romfs=" + rf_path,
             "--seeddb=" + seeddb_path,
-            input_path,
         });
+        if (!cdn_seed_hex.empty()) argv.push("--seed=" + cdn_seed_hex);
+        argv.push(input_path);
         char *empty_envp2[] = {nullptr};
         int rc = ctrtool_main(argv.size(), argv.data(), empty_envp2);
         std::string out = cap.read();

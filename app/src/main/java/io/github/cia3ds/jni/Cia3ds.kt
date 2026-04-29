@@ -3,10 +3,12 @@ package io.github.cia3ds.jni
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import io.github.cia3ds.seed.SeedFetcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -38,6 +40,7 @@ class Cia3ds private constructor(private val appCtx: Context) {
         wantCci: Boolean,
         progress: NativeProgressCallback?,
         log: NativeLogCallback?,
+        seedFetcher: NativeSeedFetcherCallback?,
     ): Int
 
     private external fun nativeVersion(): String
@@ -77,6 +80,13 @@ class Cia3ds private constructor(private val appCtx: Context) {
                 val t = Thread({
                     val pcb = NativeProgressCallback { pct, msg -> progressEmit(pct, msg) }
                     val lcb = NativeLogCallback { line -> logEmit(line) }
+                    val fetcher = SeedFetcher(appCtx)
+                    val scb = NativeSeedFetcherCallback { tid ->
+                        // Native side calls us synchronously; bridge to the
+                        // suspending fetcher with runBlocking on this engine
+                        // thread (we're already off the UI thread).
+                        runBlocking { fetcher.fetch(tid) { line -> logEmit(line) } }
+                    }
                     val code = nativeDecryptCia(
                         inPfd.fd,
                         outPfd.fd,
@@ -86,6 +96,7 @@ class Cia3ds private constructor(private val appCtx: Context) {
                         format.useNcsdRebuild,
                         pcb,
                         lcb,
+                        scb,
                     )
                     if (cont.isActive) cont.resume(code)
                 }, "cia3ds-engine")
@@ -159,6 +170,15 @@ fun interface NativeProgressCallback {
 /** Callable from native code via JNI; receives one log line per call. */
 fun interface NativeLogCallback {
     fun onLine(line: String)
+}
+
+/**
+ * Callable from native code via JNI to ask Kotlin to fetch a per-title seed
+ * from Nintendo's CDN. Returns 16 bytes on success or null on miss / network
+ * failure. Called synchronously from the engine thread.
+ */
+fun interface NativeSeedFetcherCallback {
+    fun onFetch(titleIdHex: String): ByteArray?
 }
 
 sealed interface DecryptResult {
