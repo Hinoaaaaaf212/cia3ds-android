@@ -8,6 +8,12 @@ Retroid Pocket and Odin. Output is a fully-decrypted `.cia` (or `.cci` for
 games) that installs in any 3DS emulator that accepts plaintext content
 (Citra, Lime3DS, [Azahar][azahar]).
 
+## Screenshots
+
+|                          Single, idle                          |                          Single, decrypting                          |                       Batch                        |
+| :------------------------------------------------------------: | :------------------------------------------------------------------: | :------------------------------------------------: |
+| ![Single screen, idle](docs/screenshots/single-idle.png) | ![Single screen, decryption in progress](docs/screenshots/single-progress.png) | ![Batch screen](docs/screenshots/batch.png) |
+
 ## Status
 
 Actively in early development. Core pipeline (ctrtool extract → NCCH-flags
