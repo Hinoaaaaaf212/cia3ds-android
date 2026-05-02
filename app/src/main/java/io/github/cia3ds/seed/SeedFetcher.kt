@@ -9,25 +9,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 
-/**
- * Fetches a 16-byte per-title seed from Nintendo's eShop CDN.
- *
- * The CDN endpoint is `https://kagiya-ctr.cdn.nintendo.net/title/0x<TID>/ext_key?country=<XX>`.
- * It returns 200 + 16 raw bytes when the title has a seed, 404 when it
- * doesn't. HTTPS is mandatory (Nintendo's certs).
- *
- * Results are cached on disk under `cacheDir/seeds/<tid>.bin` so subsequent
- * runs of the same title don't hit the network. Negative results are also
- * cached as zero-byte files to avoid re-querying titles that returned 404.
- */
 class SeedFetcher(private val appCtx: Context) {
 
     private val seedDir: File = appCtx.cacheDir.resolve("seeds").apply { mkdirs() }
 
-    /**
-     * @return 16-byte seed if available either from cache or CDN, null on any failure
-     *         (offline, 404, or HTTP/SSL error).
-     */
     suspend fun fetch(titleIdHex: String, log: (String) -> Unit = {}): ByteArray? =
         withContext(Dispatchers.IO) {
             val tid = titleIdHex.lowercase(Locale.US).removePrefix("0x")
@@ -55,9 +40,6 @@ class SeedFetcher(private val appCtx: Context) {
                 }
             }
 
-            // Country preference order. Most titles have the same seed across
-            // regions, but querying multiple raises the success rate slightly
-            // for region-specific titles.
             for (country in COUNTRIES) {
                 val tidUpper = tid.uppercase(Locale.US)
                 val url = URL("https://kagiya-ctr.cdn.nintendo.net/title/0x$tidUpper/ext_key?country=$country")
@@ -84,7 +66,6 @@ class SeedFetcher(private val appCtx: Context) {
                             }
                             404 -> {
                                 log("seed-fetch: 404 from $country")
-                                // try next country
                             }
                             else -> log("seed-fetch: HTTP $code from $country")
                         }
@@ -97,11 +78,6 @@ class SeedFetcher(private val appCtx: Context) {
                 }
             }
 
-            // All countries returned 404 or errored. Cache the negative result
-            // only if the failures were authoritative 404s; for transport
-            // errors we'd rather retry next time. Simplest: write zero-byte
-            // file so we don't keep hammering the CDN. The user can wipe
-            // cacheDir to force a refetch.
             try { cached.createNewFile() } catch (_: Throwable) {}
             null
         }

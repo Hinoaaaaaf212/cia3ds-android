@@ -150,7 +150,6 @@ fun SingleScreen() {
                 )
             }.onFailure { Log.w(TAG, "takePersistableUriPermission(write) failed: ${it.message}") }
             output = uri
-            // Don't make the user tap a second button — just decrypt now.
             input?.let { inUri -> launchDecrypt(inUri, uri) }
         }
     }

@@ -23,12 +23,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.cia3ds.jni.DecryptResult
 
-/**
- * Big, glanceable progress card. Replaces the default thin LinearProgressIndicator
- * because users complained it was too easy to miss while a multi-minute
- * makerom rebuild ran. Shows the percentage at full headline-size, a
- * 14dp-tall bar, and the latest status message in the same surface.
- */
 @Composable
 fun ProgressCard(
     percent: Int,

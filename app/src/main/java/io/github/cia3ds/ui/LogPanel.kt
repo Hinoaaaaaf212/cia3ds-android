@@ -22,11 +22,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-/**
- * Scrollable log panel for surfacing native ctrtool/makerom output and our
- * own JNI status messages. Auto-scrolls to the bottom as new lines arrive,
- * with an "Copy" affordance so users can paste the log into bug reports.
- */
 @Composable
 fun LogPanel(
     lines: List<String>,

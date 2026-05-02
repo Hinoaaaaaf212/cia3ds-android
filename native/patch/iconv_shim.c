@@ -1,19 +1,9 @@
-/* iconv_shim.c - UTF-8 passthrough implementation for Android bionic.
- *
- * makerom/src/oschar.c uses iconv() to convert between the host narrow
- * encoding and UTF-8. On Android the host narrow encoding *is* UTF-8, so
- * this implementation simply copies bytes verbatim and never reports a
- * conversion error.
- *
- * SPDX-License-Identifier: MIT
- */
+/* Android bionic has no iconv; since the host encoding is already UTF-8, this is a byte-copy passthrough. */
 #include "iconv_shim.h"
 
 #include <errno.h>
 #include <string.h>
 
-/* A single non-NULL sentinel; iconv_open is allowed to return any non-(-1)
- * pointer for success. */
 static int kIconvSentinel = 0;
 
 iconv_t iconv_open(const char *tocode, const char *fromcode) {

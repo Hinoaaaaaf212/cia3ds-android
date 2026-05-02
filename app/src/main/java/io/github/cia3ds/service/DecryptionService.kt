@@ -25,11 +25,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/**
- * Long-running batch decryption runs here so the engine survives Activity
- * recreation (rotation, launching the SAF picker, etc.). The Service exposes
- * its progress as a [StateFlow] consumed by the UI.
- */
 class DecryptionService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -102,7 +97,6 @@ class DecryptionService : Service() {
             try {
                 nm.notify(NOTIF_ID, buildNotification(total, done))
             } catch (_: SecurityException) {
-                // POST_NOTIFICATIONS not granted on 13+; ignore.
             }
         }
     }

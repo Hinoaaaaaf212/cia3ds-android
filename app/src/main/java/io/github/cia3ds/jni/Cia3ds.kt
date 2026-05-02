@@ -14,23 +14,13 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.coroutines.resume
 
-/**
- * Thin wrapper around libcia3ds.so. The native side does the heavy lifting;
- * this layer is responsible for materializing seeddb.bin, opening fds from
- * SAF Uris, and serializing access to the engine (the C/C++ tools we wrap
- * are not reentrant).
- */
 class Cia3ds private constructor(private val appCtx: Context) {
 
     init {
         System.loadLibrary("cia3ds")
     }
 
-    /** Native entrypoint; returns 0 on success, 10 if the input was already
-     *  decrypted (and the original bytes were copied to the output), or any
-     *  other non-zero value on failure. The native side treats Cci and
-     *  ThreeDs identically; the only difference at the Kotlin layer is the
-     *  suggested file extension. */
+    /** Returns 0 on success, 10 if already-decrypted (original bytes copied to output), non-zero on failure. */
     private external fun nativeDecryptCia(
         inFd: Int,
         outFd: Int,
@@ -47,12 +37,6 @@ class Cia3ds private constructor(private val appCtx: Context) {
 
     fun version(): String = nativeVersion()
 
-    /**
-     * Decrypt a single .cia/.3ds file referenced by an SAF input Uri,
-     * writing the result to the SAF output Uri.
-     *
-     * @param progressEmit invoked from a background thread with (percent, message).
-     */
     suspend fun decrypt(
         input: Uri,
         output: Uri,
@@ -75,16 +59,14 @@ class Cia3ds private constructor(private val appCtx: Context) {
             }
 
         try {
-            // Run on a single, dedicated thread because ctrtool/makerom are not reentrant.
             val rc = suspendCancellableCoroutine<Int> { cont ->
                 val t = Thread({
                     val pcb = NativeProgressCallback { pct, msg -> progressEmit(pct, msg) }
                     val lcb = NativeLogCallback { line -> logEmit(line) }
                     val fetcher = SeedFetcher(appCtx)
                     val scb = NativeSeedFetcherCallback { tid ->
-                        // Native side calls us synchronously; bridge to the
-                        // suspending fetcher with runBlocking on this engine
-                        // thread (we're already off the UI thread).
+                        // Native side calls us synchronously; we bridge to the
+                        // suspending fetcher with runBlocking on this engine thread.
                         runBlocking { fetcher.fetch(tid) { line -> logEmit(line) } }
                     }
                     val code = nativeDecryptCia(
@@ -138,11 +120,6 @@ class Cia3ds private constructor(private val appCtx: Context) {
     private fun seedDbFile(): File =
         appCtx.cacheDir.resolve("seeddb.bin")
 
-    /**
-     * Copy the bundled assets/seeddb.bin to cacheDir on first use. Doing this
-     * each app start would be wasteful for a 60 KB file but is harmless if
-     * we add a length check.
-     */
     private fun ensureSeedDb() {
         val target = seedDbFile()
         val asset = appCtx.assets.open(SEEDDB_ASSET).use { it.readBytes() }
@@ -162,21 +139,14 @@ class Cia3ds private constructor(private val appCtx: Context) {
     }
 }
 
-/** Callable from native code via JNI; do not rename without updating ProGuard. */
 fun interface NativeProgressCallback {
     fun onProgress(percent: Int, message: String)
 }
 
-/** Callable from native code via JNI; receives one log line per call. */
 fun interface NativeLogCallback {
     fun onLine(line: String)
 }
 
-/**
- * Callable from native code via JNI to ask Kotlin to fetch a per-title seed
- * from Nintendo's CDN. Returns 16 bytes on success or null on miss / network
- * failure. Called synchronously from the engine thread.
- */
 fun interface NativeSeedFetcherCallback {
     fun onFetch(titleIdHex: String): ByteArray?
 }
@@ -193,13 +163,6 @@ sealed interface DecryptUpdate {
     data class Finished(val result: DecryptResult) : DecryptUpdate
 }
 
-/**
- * What to write to the user-chosen output Uri after decryption.
- *
- * Cci and ThreeDs produce byte-identical NCSD output via makerom -ciatocci;
- * they only differ in the file extension we suggest to the user. CIA stays
- * a CIA — no NCSD repack — and is the safest pick for emulator install.
- */
 enum class OutputFormat(val extension: String, val useNcsdRebuild: Boolean) {
     Cia("cia", false),
     Cci("cci", true),

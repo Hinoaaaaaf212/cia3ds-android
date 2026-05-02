@@ -9,8 +9,6 @@ import android.util.Log
 class Cia3dsApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        // Log every uncaught exception under one tag so logcat captures the
-        // stack trace before the system Application Error dialog races us.
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
             Log.e("cia3ds-crash", "uncaught on thread=${t.name}", e)

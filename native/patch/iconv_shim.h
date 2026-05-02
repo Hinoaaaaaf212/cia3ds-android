@@ -1,12 +1,4 @@
-/* iconv_shim.h - Android bionic has no iconv. Since both Android and the
- * 3DS NCCH/CIA tooling treat all paths as UTF-8, conversions are no-ops.
- *
- * This header is included automatically when building makerom on Android via
- * the CIA3DS_BUILD compile definition. It provides drop-in replacements for
- * the four iconv functions that makerom/src/oschar.c uses.
- *
- * SPDX-License-Identifier: MIT
- */
+/* Android bionic has no iconv; all paths are UTF-8, so conversions are no-ops. */
 #ifndef CIA3DS_ICONV_SHIM_H
 #define CIA3DS_ICONV_SHIM_H
 

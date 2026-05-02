@@ -1,20 +1,3 @@
-// cia3ds_jni.cpp - JNI surface for the on-device 3DS .cia/.3ds decryptor.
-//
-// Calls renamed ctrtool_main() / makerom_main() in-process to perform the
-// same multi-step pipeline that the original Windows .bat script ran:
-//
-//   1. ctrtool --info               -> read TitleId, version, content layout
-//   2. ctrtool --contents=<tmp>/c   -> extract decrypted NCCH partitions
-//   3. ncch_flags_mark_decrypted()  -> mark each partition as plaintext
-//   4. makerom -f cia ...           -> rebuild the CIA from the partitions
-//
-// The Kotlin layer hands us int file descriptors from
-// ContentResolver.openFileDescriptor; we materialize the input/output to a
-// real file path under cacheDir so the C/C++ tools (which use FILE*) can
-// fopen() them. Output is then copied back to the caller's Uri-backed fd.
-//
-// SPDX-License-Identifier: MIT
-
 #include <jni.h>
 #include <android/log.h>
 
@@ -38,12 +21,9 @@
 
 extern "C" {
 #include "ncch_flags.h"
-// makerom is pure C, so its renamed entrypoint has C linkage.
 int makerom_main(int argc, char *argv[]);
 }
 
-// ctrtool is C++; its main() takes (argc, argv, envp) and we keep that
-// signature so the mangled symbol matches what's in libctrtool_static.a.
 int ctrtool_main(int argc, char *argv[], char *envp[]);
 
 #define LOG_TAG "cia3ds-jni"
@@ -53,9 +33,6 @@ int ctrtool_main(int argc, char *argv[], char *envp[]);
 
 namespace {
 
-// Identifies the kind of CIA we're rebuilding so the makerom flags match
-// what the original .bat script produced. Values mirror the result enum on
-// the Kotlin side.
 enum class CiaKind {
     Game = 0,
     Demo = 1,
@@ -82,16 +59,11 @@ struct ProgressReporter {
     }
 };
 
-// Calls a Kotlin SeedFetcherCallback with a title id hex string and gets
-// back a 16-byte seed (or null). Used so the C++ side can ask Kotlin to do
-// the actual HTTPS request to Nintendo's CDN, since Android's HTTP stack is
-// already in the JVM.
 struct SeedFetcher {
     JNIEnv *env;
     jobject callback;
     jmethodID onFetch;
 
-    // Returns 16 bytes on success, empty on miss.
     std::string fetch(const std::string &tid_hex) const {
         std::string out;
         if (!callback || !onFetch) return out;
@@ -119,7 +91,6 @@ struct LogSink {
     jmethodID onLine;
 
     void emit(const std::string &line) const {
-        // Always echo to logcat so users (and bug reports) see it.
         __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", line.c_str());
         if (!callback || !onLine) return;
         jstring jline = env->NewStringUTF(line.c_str());
@@ -138,10 +109,9 @@ struct LogSink {
     }
 
     void emitBlock(const std::string &text) const {
-        // Split a multi-line capture into individual lines so the UI can show
-        // each as a separate log row. Wrap in a local frame because emit()
-        // creates a jstring per line and ctrtool/makerom output can be tens
-        // of thousands of lines, blowing the 512-entry local-ref table.
+        // PushLocalFrame because emit() creates a jstring per line and
+        // ctrtool/makerom output can be tens of thousands of lines, blowing
+        // the 512-entry local-ref table.
         if (env) env->PushLocalFrame(16);
         size_t start = 0;
         size_t emitted = 0;
@@ -167,7 +137,6 @@ struct LogSink {
     }
 };
 
-// Helper: construct a vector<char*> argv from a string list, plus a sentinel.
 class Argv {
 public:
     explicit Argv(std::initializer_list<std::string> list) : owned_(list) {
@@ -227,9 +196,7 @@ bool rmtree(const std::string &path) {
 
 bool copy_fd_to_path(int fd, const std::string &path) {
     if (fd < 0) return false;
-    if (lseek(fd, 0, SEEK_SET) == (off_t)-1 && errno != ESPIPE) {
-        // Some pipe-style fds aren't seekable; we'll just read forward.
-    }
+    lseek(fd, 0, SEEK_SET);
     int out = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (out < 0) {
         LOGE("open %s for write: %s", path.c_str(), strerror(errno));
@@ -277,9 +244,6 @@ bool copy_path_to_fd(const std::string &path, int fd) {
     return ok;
 }
 
-// Capture stdout/stderr produced by ctrtool/makerom into a temp file and
-// return its contents. Used both for parsing ctrtool --info output and for
-// surfacing native errors back to the Kotlin layer when tools fail.
 class StdoutCapture {
 public:
     StdoutCapture(const std::string &path) : path_(path), saved_stdout_(-1), saved_stderr_(-1) {
@@ -373,29 +337,23 @@ CiaInfo run_ctrtool_info(const std::string &input_path,
     sink.emitBlock(text);
     sink.emitf("[ctrtool --info exit=%d]", rc);
 
-    // Parse "Title id:" or "Title ID:" (case varies between CIA and CCI).
-    // We accept the first 16 hex chars after the colon.
     std::regex tid_re(R"(Title\s+[iI][dD]\s*:\s*([0-9a-fA-F]{16}))");
     std::smatch m;
     if (std::regex_search(text, m, tid_re)) {
         out.title_id = m[1].str();
         out.kind = classify_kind(out.title_id);
     }
-    // "Title version:" appears in TMD section; falls back to 0.
     std::regex ver_re(R"(Title\s+[vV]ersion\s*:\s*(\d+))");
     if (std::regex_search(text, m, ver_re)) {
         out.title_version = m[1].str();
     } else {
         out.title_version = "0";
     }
-    // "Crypto Type:  None" / "Crypto Type:  Decrypted" -> already plaintext.
     std::regex ct_re(R"(Crypto\s+Type\s*:\s*(None|Decrypted))",
                      std::regex::icase);
     if (std::regex_search(text, m, ct_re)) {
         out.already_decrypted = true;
     }
-    // 3DS NCSD inputs don't have a TitleMetaData header but ctrtool prints
-    // "NCSD:" early. Used to switch to CCI rebuild.
     if (text.find("NCSD:") != std::string::npos
         && text.find("CIA:") == std::string::npos) {
         out.is_3ds = true;
@@ -405,12 +363,10 @@ CiaInfo run_ctrtool_info(const std::string &input_path,
 
 struct Partition {
     std::string path;
-    int slot;       // NCSD partition slot (0..7)
-    uint32_t content_id; // CIA TMD content_id, may be non-sequential
+    int slot;
+    uint32_t content_id;
 };
 
-// Splice decrypted region bytes from src_path into part_path at offset.
-// Returns true on success.
 bool splice_region(const std::string &part_path,
                    uint64_t dst_offset,
                    const std::string &src_path) {
@@ -565,8 +521,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         env->DeleteLocalRef(cls);
     }
 
-    // Outer local frame so any leaked jstring during error paths is freed
-    // when the JNI call returns. RAII guard so every return path pops it.
     struct LocalFrameGuard {
         JNIEnv *e;
         LocalFrameGuard(JNIEnv *e, jint cap) : e(e) { e->PushLocalFrame(cap); }
@@ -616,10 +570,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
                info.title_version.c_str(),
                (int)info.kind, (int)info.already_decrypted, (int)info.is_3ds);
 
-    // Try to get a fresh per-title seed from Nintendo's CDN. If we get one,
-    // pass it via --seed=hex to subsequent ctrtool invocations as a
-    // higher-priority alternative to the bundled seeddb.bin. If the fetch
-    // fails (offline, 404), we silently fall back to seeddb-only.
     std::string cdn_seed_hex;
     if (!info.title_id.empty() && seedFetcherCallback) {
         sink.emitf("seed-fetch: querying CDN for %s", info.title_id.c_str());
@@ -644,7 +594,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             return 4;
         }
         rmtree(work);
-        return 10; // sentinel: "already decrypted"
+        return 10; // rc=10: already-decrypted sentinel
     }
 
     progress.post(20, "Extracting partitions");
@@ -674,7 +624,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     std::vector<Partition> partitions;
     if (!list_extracted_partitions(contents_dir, partitions)) {
         sink.emitf("ERR: no partitions extracted in %s", contents_dir.c_str());
-        // Dump what's actually there to help diagnose.
         DIR *d = opendir(contents_dir.c_str());
         if (d) {
             struct dirent *e;
@@ -693,7 +642,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
 
     progress.post(50, "Decrypting NCCH regions");
     for (auto &p : partitions) {
-        // 1. Read NCCH region offsets/sizes from the still-encrypted partition.
         NcchRegions reg;
         if (!read_ncch_regions(p.path, reg)) {
             sink.emitf("ERR: cannot read NCCH header from %s", p.path.c_str());
@@ -705,8 +653,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
                    (unsigned long long)reg.exefs_off, (unsigned long long)reg.exefs_size,
                    (unsigned long long)reg.romfs_off, (unsigned long long)reg.romfs_size);
 
-        // 2. Run ctrtool again on the original input, dumping just this
-        // content's decrypted regions to temp files.
         std::string region_dir = work + "/regions_" + std::to_string(p.slot);
         if (!make_dir_p(region_dir)) return 9;
         std::string eh_path = region_dir + "/exheader.bin";
@@ -736,8 +682,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             return 9;
         }
 
-        // 3. Splice the decrypted regions back into the partition file at
-        //    their original offsets.
         struct stat st;
         if (reg.exhdr_size > 0 && stat(eh_path.c_str(), &st) == 0) {
             sink.emitf("  splicing exheader (%lld bytes) -> 0x%llx",
@@ -787,9 +731,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             argv.push("-dlc");
         }
         for (auto &p : partitions) {
-            // makerom -i <file>:<index>:<id>
-            //   index = NCSD partition slot
-            //   id    = CIA TMD content id (must match what was in the source)
             char buf[32];
             snprintf(buf, sizeof(buf), "%d:0x%08x", p.slot, p.content_id);
             argv.push("-i");
@@ -799,7 +740,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             argv.push("-ver");
             argv.push(info.title_version);
         }
-        // Echo full command line for transparency.
         std::string cmd = "$";
         for (int j = 0; j < argv.size(); ++j) cmd += " " + std::string(argv.data()[j]);
         sink.emit(cmd);

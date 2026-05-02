@@ -1,32 +1,5 @@
-/* ncch_flags.c - patch the NCCH "other_flag" byte to declare the partition
- * as plaintext, replacing the post-extract step that the closed-source
- * decrypt.exe used to perform.
- *
- * NCCH header layout (verified against ntd::n3ds::NcchCommonHeader in
- * libnintendo-n3ds, included as a submodule):
- *
- *   file offset 0x000-0x0FF: RSA-2048 signature
- *   file offset 0x100-0x1FF: NcchCommonHeader (0x100 bytes)
- *
- * Inside NcchCommonHeader, the 8-byte NcchFlags struct begins at struct
- * offset 0x88 (file offset 0x188). The struct's last byte, "other_flag", is
- * a bitarray with these meaningful bits:
- *
- *   bit 0 (0x01): FixedAesKey
- *   bit 1 (0x02): NoMountRomFS
- *   bit 2 (0x04): NoEncryption  <-- we set this
- *   bit 5 (0x20): SeededAesKeyY
- *   bit 6 (0x40): ManualDisclosure
- *
- * Setting NoEncryption and clearing both crypto-key bits causes emulators
- * to install the partition without ever consulting an AES key.
- *
- * The NCCH header is unsigned in practice (the RSA signature is checked
- * only on signed retail content; for sideload/install paths, emulators
- * accept the bytes as-is), so we do not need to recompute a signature.
- *
- * SPDX-License-Identifier: MIT
- */
+/* NcchFlags.other_flag is at file offset 0x18F (NcchCommonHeader base 0x100 + struct offset 0x88 + byte 7).
+ * Bit 2 (0x04) = NoEncryption must be set; bits 0 (FixedAesKey) and 5 (SeededAesKeyY) must be clear. */
 #include "ncch_flags.h"
 
 #include <errno.h>
