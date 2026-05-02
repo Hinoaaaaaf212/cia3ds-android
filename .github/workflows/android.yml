@@ -76,10 +76,10 @@ jobs:
 
       - name: Build release APK
         env:
-          KEYSTORE_FILE: ${{ github.workspace }}/release.keystore
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          CIA3DS_KEYSTORE: ${{ github.workspace }}/release.keystore
+          CIA3DS_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          CIA3DS_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          CIA3DS_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew :app:assembleRelease --no-daemon
 
       - name: Publish release
