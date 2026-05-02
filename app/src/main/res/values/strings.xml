@@ -13,9 +13,9 @@
     <string name="single_done">Done. Decrypted file ready.</string>
 
     <string name="format_label">Output format</string>
-    <string name="format_desc_cia">.cia — original CIA package, decrypted in place. Safest for emulator install.</string>
-    <string name="format_desc_cci">.cci — raw NCSD cartridge image. Smaller file; only valid for game CIAs.</string>
-    <string name="format_desc_3ds">.3ds — same NCSD bytes as .cci, with the extension some emulators expect.</string>
+    <string name="format_desc_cia">.cia: original CIA package, decrypted in place. Safest for emulator install.</string>
+    <string name="format_desc_cci">.cci: raw NCSD cartridge image. Smaller file; only valid for game CIAs.</string>
+    <string name="format_desc_3ds">.3ds: same NCSD bytes as .cci, with the extension some emulators expect.</string>
 
     <string name="batch_title">Batch decrypt a folder</string>
     <string name="batch_pick_folder">Choose source folder</string>
@@ -35,10 +35,10 @@
     <string name="about_license_hide">Hide full MIT License</string>
     <string name="about_license_full">MIT License\n\nCopyright (c) 2026 cia3ds-android contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.</string>
     <string name="about_license_third_party_title">Third-party components</string>
-    <string name="about_license_third_party">• ctrtool, makerom (3DSGuy/Project_CTR) — MIT\n• libtoolchain, libfmt, libnintendo-n3ds, libbroadon-es — MIT\n• libblz, libyaml — permissive (MIT-style)\n• mbedTLS 2.x — Apache-2.0\n• Bundled seeddb.bin — community-maintained (ihavamac and contributors)</string>
+    <string name="about_license_third_party">• ctrtool, makerom (3DSGuy/Project_CTR): MIT\n• libtoolchain, libfmt, libnintendo-n3ds, libbroadon-es: MIT\n• libblz, libyaml: permissive (MIT-style)\n• mbedTLS 2.x: Apache-2.0\n• Bundled seeddb.bin: community-maintained (ihavamac and contributors)</string>
 
     <string name="error_generic">Decryption failed: %1$s</string>
-    <string name="error_already_decrypted">This file appears to already be decrypted — nothing to do. You can install it directly in your emulator, or pick a different (still-encrypted) CIA/3DS.</string>
+    <string name="error_already_decrypted">This file appears to already be decrypted, so there is nothing to do. You can install it directly in your emulator, or pick a different (still-encrypted) CIA/3DS.</string>
     <string name="error_unsupported">Unsupported file type.</string>
 
     <string name="notif_channel_id">decrypt</string>

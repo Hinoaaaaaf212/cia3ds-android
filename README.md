@@ -56,7 +56,7 @@ backgrounding.
 The app declares `android.intent.category.LEANBACK_LAUNCHER` and ships a TV
 banner, so it shows up on the Android TV home screen. D-pad navigation
 works through the stock Compose Material focus model. SAF pickers are the
-same as on phones — most TV remotes will need a connected USB/BT mouse or
+same as on phones, so most TV remotes will need a connected USB/BT mouse or
 gamepad with a directional pad to operate them comfortably.
 
 ## Architecture
@@ -69,11 +69,11 @@ gamepad with a directional pad to operate them comfortably.
                            | JNI
 +--------------------------v-----------------------------+
 | libcia3ds.so   (one shared lib, 3 ABIs)                |
-|   • ctrtool   — NCCH/CIA decryption (MIT)              |
-|   • makerom   — CIA/CCI rebuild  (MIT)                 |
-|   • mbedTLS   — AES-CTR / SHA / RSA  (Apache-2.0)      |
+|   • ctrtool: NCCH/CIA decryption (MIT)                 |
+|   • makerom: CIA/CCI rebuild (MIT)                     |
+|   • mbedTLS: AES-CTR / SHA / RSA (Apache-2.0)          |
 |   • libfmt, libyaml, libblz, libtoolchain, n3ds-libs   |
-|   • ncch_flags.c — replaces closed-source decrypt.exe  |
+|   • ncch_flags.c: replaces closed-source decrypt.exe   |
 +--------------------------------------------------------+
                            |
                   assets/seeddb.bin
