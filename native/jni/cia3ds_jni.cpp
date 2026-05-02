@@ -623,15 +623,32 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
 
     std::vector<Partition> partitions;
     if (!list_extracted_partitions(contents_dir, partitions)) {
-        sink.emitf("ERR: no partitions extracted in %s", contents_dir.c_str());
+        int file_count = 0;
+        bool any_c_prefix = false;
         DIR *d = opendir(contents_dir.c_str());
         if (d) {
             struct dirent *e;
             while ((e = readdir(d)) != nullptr) {
                 std::string n = e->d_name;
-                if (n != "." && n != "..") sink.emitf("  contents/%s", n.c_str());
+                if (n == "." || n == "..") continue;
+                file_count++;
+                if (n.rfind("c.", 0) == 0) any_c_prefix = true;
+                sink.emitf("  contents/%s", n.c_str());
             }
             closedir(d);
+        }
+        if (file_count == 0) {
+            sink.emit("ERR: this file appears to already be decrypted.");
+            sink.emit("ctrtool extracted no encrypted partitions, which means the");
+            sink.emit("input has already been processed. Try installing it directly");
+            sink.emit("in your emulator, or pick a still-encrypted CIA/3DS file.");
+            return 11;
+        }
+        if (any_c_prefix) {
+            sink.emit("ERR: ctrtool wrote partition files but with an unexpected naming pattern.");
+            sink.emit("This usually means the engine and ctrtool versions are out of sync.");
+        } else {
+            sink.emitf("ERR: no recognizable partitions in %s", contents_dir.c_str());
         }
         return 6;
     }

@@ -87,7 +87,7 @@ class Cia3ds private constructor(private val appCtx: Context) {
             }
             when (rc) {
                 0 -> DecryptResult.Success
-                10 -> DecryptResult.AlreadyDecrypted
+                10, 11 -> DecryptResult.AlreadyDecrypted
                 else -> DecryptResult.Failure("Engine error code $rc")
             }
         } catch (t: Throwable) {

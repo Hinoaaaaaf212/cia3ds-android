@@ -7,7 +7,6 @@
 
     <string name="single_title">Decrypt one file</string>
     <string name="single_pick">Choose a .cia or .3ds file</string>
-    <string name="single_decrypt">Decrypt</string>
     <string name="single_save_as">Decrypt and save…</string>
     <string name="single_share">Share</string>
     <string name="single_idle">Pick a file to begin.</string>
@@ -39,7 +38,7 @@
     <string name="about_license_third_party">• ctrtool, makerom (3DSGuy/Project_CTR) — MIT\n• libtoolchain, libfmt, libnintendo-n3ds, libbroadon-es — MIT\n• libblz, libyaml — permissive (MIT-style)\n• mbedTLS 2.x — Apache-2.0\n• Bundled seeddb.bin — community-maintained (ihavamac and contributors)</string>
 
     <string name="error_generic">Decryption failed: %1$s</string>
-    <string name="error_already_decrypted">Already decrypted; skipped.</string>
+    <string name="error_already_decrypted">This file appears to already be decrypted — nothing to do. You can install it directly in your emulator, or pick a different (still-encrypted) CIA/3DS.</string>
     <string name="error_unsupported">Unsupported file type.</string>
 
     <string name="notif_channel_id">decrypt</string>

@@ -6,15 +6,17 @@ import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedButton
@@ -154,27 +156,40 @@ fun SingleScreen() {
         }
     }
 
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .statusBarsPadding()
+            .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            stringResource(R.string.single_title),
-            style = MaterialTheme.typography.headlineSmall,
-        )
-
-        Card(elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.single_pick))
-                Button(onClick = {
-                    pickInput.launch(arrayOf("application/octet-stream", "*/*"))
-                }) {
+        Card(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .padding(top = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = { pickInput.launch(arrayOf("application/octet-stream", "*/*")) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text(inputName ?: stringResource(R.string.single_pick))
                 }
-                Text(stringResource(R.string.format_label))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    stringResource(R.string.format_label),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     OutputFormat.entries.forEach { f ->
                         FilterChip(
                             selected = format == f,
@@ -183,12 +198,9 @@ fun SingleScreen() {
                         )
                     }
                 }
-                Text(
-                    stringResource(format.descriptionRes()),
-                    style = MaterialTheme.typography.bodySmall,
-                )
                 Button(
                     enabled = input != null && !isRunning,
+                    modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         val baseName = inputName?.substringBeforeLast('.') ?: "decrypted"
                         Log.i(TAG, "save-as: launching CreateDocument for $baseName.${format.extension}")
@@ -196,50 +208,42 @@ fun SingleScreen() {
                     },
                 ) { Text(stringResource(R.string.single_save_as)) }
 
-                val readiness = when {
-                    input == null -> "Pick a .cia or .3ds file to begin."
-                    isRunning -> "Decrypting…"
-                    lastResult is DecryptResult.Success -> "Done. Pick a new file or save again to re-run."
-                    output == null -> "Tap 'Decrypt and save…' — you'll choose where to write the result."
-                    else -> "Ready to decrypt."
+                if (lastResult is DecryptResult.Success && output != null) {
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "application/octet-stream"
+                                putExtra(Intent.EXTRA_STREAM, output)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            ctx.startActivity(Intent.createChooser(send, "Share decrypted file"))
+                        },
+                    ) { Text(stringResource(R.string.single_share)) }
                 }
-                Text(readiness, style = MaterialTheme.typography.bodySmall)
 
-                Button(
-                    enabled = input != null && output != null && !isRunning,
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        val inUri = input ?: return@Button
-                        val outUri = output ?: return@Button
-                        launchDecrypt(inUri, outUri)
-                    },
-                ) { Text(stringResource(R.string.single_decrypt)) }
+                Box(modifier = Modifier.weight(1f).fillMaxWidth())
             }
         }
 
-        if (isRunning || lastResult != null) {
-            ProgressCard(
-                percent = percent,
-                statusMessage = status.ifEmpty { "Working…" },
-                isRunning = isRunning,
-                lastResult = lastResult,
-            )
-        }
+        Column(
+            modifier = Modifier
+                .weight(1.4f)
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (isRunning || lastResult != null) {
+                ProgressCard(
+                    percent = percent,
+                    statusMessage = status.ifEmpty { "Working…" },
+                    isRunning = isRunning,
+                    lastResult = lastResult,
+                )
+            }
 
-        if (lastResult is DecryptResult.Success && output != null) {
-            OutlinedButton(onClick = {
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "application/octet-stream"
-                    putExtra(Intent.EXTRA_STREAM, output)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                ctx.startActivity(Intent.createChooser(send, "Share decrypted file"))
-            }) { Text(stringResource(R.string.single_share)) }
-        }
-
-        if (logLines.isNotEmpty()) {
             LogPanel(
                 lines = logLines,
+                modifier = Modifier.weight(1f),
                 onCopy = {
                     val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
                     cm?.setPrimaryClip(
