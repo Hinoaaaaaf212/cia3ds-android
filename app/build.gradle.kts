@@ -39,6 +39,25 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val storeFilePath = System.getenv("CIA3DS_KEYSTORE")
+                ?: project.findProperty("cia3ds.keystore") as String?
+            val storePass = System.getenv("CIA3DS_KEYSTORE_PASSWORD")
+                ?: project.findProperty("cia3ds.keystore.password") as String?
+            val keyAliasName = System.getenv("CIA3DS_KEY_ALIAS")
+                ?: project.findProperty("cia3ds.key.alias") as String?
+            val keyPass = System.getenv("CIA3DS_KEY_PASSWORD")
+                ?: project.findProperty("cia3ds.key.password") as String?
+            if (storeFilePath != null && storePass != null && keyAliasName != null && keyPass != null) {
+                storeFile = file(storeFilePath)
+                storePassword = storePass
+                keyAlias = keyAliasName
+                keyPassword = keyPass
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -52,6 +71,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
