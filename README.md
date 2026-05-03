@@ -1,5 +1,8 @@
 # cia3ds-android
 
+[<img src="https://img.shields.io/badge/Obtainium-Add%20to%20Obtainium-blueviolet?style=for-the-badge&logo=android" alt="Add to Obtainium" height="32">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Hinoaaaaaf212/cia3ds-android)
+[<img src="https://img.shields.io/github/v/release/Hinoaaaaaf212/cia3ds-android?style=for-the-badge&label=Latest%20APK" alt="Latest release" height="32">](https://github.com/Hinoaaaaaf212/cia3ds-android/releases/latest)
+
 On-device decryption of Nintendo 3DS `.cia` and `.3ds` files. Android port of
 the Windows-only [Batch CIA 3DS Decryptor Redux][upstream].
 
