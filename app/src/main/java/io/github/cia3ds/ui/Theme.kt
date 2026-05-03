@@ -26,9 +26,16 @@ private val DarkColors = darkColorScheme(
 )
 
 @Composable
-fun Cia3dsTheme(content: @Composable () -> Unit) {
+fun Cia3dsTheme(
+    pref: ThemePref = ThemePref.System,
+    content: @Composable () -> Unit,
+) {
     val ctx = LocalContext.current
-    val isDark = isSystemInDarkTheme()
+    val isDark = when (pref) {
+        ThemePref.Light -> false
+        ThemePref.Dark -> true
+        ThemePref.System -> isSystemInDarkTheme()
+    }
     val colors = when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             if (isDark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)

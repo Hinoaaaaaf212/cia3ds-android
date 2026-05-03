@@ -7,7 +7,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
@@ -18,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,25 +38,27 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun Cia3dsApp() {
-    Cia3dsTheme {
-        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            var selected by rememberSaveable { mutableStateOf(NavTab.Single) }
-            NavigationSuiteScaffold(
-                navigationSuiteItems = {
-                    NavTab.entries.forEach { tab ->
-                        item(
-                            selected = selected == tab,
-                            onClick = { selected = tab },
-                            icon = { Icon(tab.icon(), contentDescription = null) },
-                            label = { Text(stringRes(tab.labelRes)) },
-                        )
+    val themePref = rememberThemePrefState()
+    CompositionLocalProvider(LocalThemePref provides themePref) {
+        Cia3dsTheme(pref = themePref.value) {
+            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                var selected by rememberSaveable { mutableStateOf(NavTab.Decrypt) }
+                NavigationSuiteScaffold(
+                    navigationSuiteItems = {
+                        NavTab.entries.forEach { tab ->
+                            item(
+                                selected = selected == tab,
+                                onClick = { selected = tab },
+                                icon = { Icon(tab.icon(), contentDescription = null) },
+                                label = { Text(stringRes(tab.labelRes)) },
+                            )
+                        }
+                    },
+                ) {
+                    when (selected) {
+                        NavTab.Decrypt -> DecryptScreen()
+                        NavTab.About -> AboutScreen()
                     }
-                },
-            ) {
-                when (selected) {
-                    NavTab.Single -> SingleScreen()
-                    NavTab.Batch -> BatchScreen()
-                    NavTab.About -> AboutScreen()
                 }
             }
         }
@@ -64,13 +66,11 @@ fun Cia3dsApp() {
 }
 
 enum class NavTab(val labelRes: Int) {
-    Single(R.string.nav_single),
-    Batch(R.string.nav_batch),
+    Decrypt(R.string.nav_decrypt),
     About(R.string.nav_about);
 
     fun icon() = when (this) {
-        Single -> Icons.Filled.InsertDriveFile
-        Batch -> Icons.Filled.Folder
+        Decrypt -> Icons.Filled.InsertDriveFile
         About -> Icons.Filled.Info
     }
 }

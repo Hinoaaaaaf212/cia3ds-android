@@ -2,6 +2,7 @@ package io.github.cia3ds.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -9,6 +10,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,6 +36,7 @@ fun AboutScreen() {
     val engineVersion = remember { runCatching { Cia3ds.get(ctx).version() }.getOrDefault("?") }
     var fullLicenseShown by rememberSaveable { mutableStateOf(false) }
     val scroll = rememberScrollState()
+    val themePref = LocalThemePref.current
 
     Column(
         modifier = Modifier
@@ -43,10 +46,73 @@ fun AboutScreen() {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(stringResource(R.string.about_title), style = MaterialTheme.typography.headlineSmall)
-        Text(stringResource(R.string.about_version, BuildConfig.VERSION_NAME))
-        Text("Engine: $engineVersion", style = MaterialTheme.typography.bodySmall)
-        Text(stringResource(R.string.about_blurb))
-        Text(stringResource(R.string.about_attribution), style = MaterialTheme.typography.bodySmall)
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    stringResource(R.string.about_app_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.about_version, BuildConfig.VERSION_NAME),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    "${stringResource(R.string.about_engine_label)}: $engineVersion",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    stringResource(R.string.about_blurb),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    stringResource(R.string.about_appearance_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val options = listOf(
+                        ThemePref.System to R.string.about_appearance_system,
+                        ThemePref.Light to R.string.about_appearance_light,
+                        ThemePref.Dark to R.string.about_appearance_dark,
+                    )
+                    options.forEach { (value, labelRes) ->
+                        FilterChip(
+                            selected = themePref.value == value,
+                            onClick = {
+                                themePref.value = value
+                                saveThemePref(ctx, value)
+                            },
+                            label = { Text(stringResource(labelRes)) },
+                        )
+                    }
+                }
+            }
+        }
+
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -121,6 +187,10 @@ fun AboutScreen() {
                     stringResource(R.string.about_license_third_party_title),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.about_attribution),
+                    style = MaterialTheme.typography.bodySmall,
                 )
                 Text(
                     stringResource(R.string.about_license_third_party),
