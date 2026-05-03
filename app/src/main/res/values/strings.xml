@@ -1,16 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">CIA Decryptor</string>
-    <string name="nav_single">Single</string>
-    <string name="nav_batch">Batch</string>
+    <string name="nav_decrypt">Decrypt</string>
     <string name="nav_about">About</string>
 
     <string name="single_title">Decrypt one file</string>
     <string name="single_pick">Choose a .cia or .3ds file</string>
+    <string name="action_clear">Clear</string>
+    <string name="single_pick_help">Decrypts one file.</string>
+    <string name="single_pick_rejected_zip">That is a .zip. Use the "Choose a .zip file" button instead.</string>
+    <string name="single_pick_rejected_other">Pick a .cia or .3ds file.</string>
+    <string name="batch_pick_zip_help">Decrypts every .cia/.3ds inside the zip.</string>
     <string name="single_save_as">Decrypt and save…</string>
     <string name="single_share">Share</string>
     <string name="single_idle">Pick a file to begin.</string>
     <string name="single_done">Done. Decrypted file ready.</string>
+    <string name="single_cancel">Cancel</string>
+    <string name="single_cancelled">Cancelled.</string>
+    <string name="single_format_fallback">Saved as .cia (cannot rebuild as .%1$s for this title type).</string>
 
     <string name="format_label">Output format</string>
     <string name="format_desc_cia">.cia: original CIA package, decrypted in place. Safest for emulator install.</string>
@@ -19,11 +26,26 @@
 
     <string name="batch_title">Batch decrypt a folder</string>
     <string name="batch_pick_folder">Choose source folder</string>
+    <string name="batch_pick_zip">Choose a .zip file</string>
+    <string name="batch_pick_output_folder">Choose output folder</string>
+    <string name="batch_zip_picked">Selected: %1$s</string>
+    <string name="batch_output_picked">Output folder: %1$s</string>
+    <string name="batch_zip_needs_output">Pick an output folder to continue.</string>
     <string name="batch_decrypt_all">Decrypt all</string>
     <string name="batch_idle">No folder selected.</string>
-    <string name="batch_no_files">No .cia or .3ds files found in this folder.</string>
+    <string name="batch_no_files">No .cia, .3ds or .zip files found in this folder.</string>
+    <string name="batch_zip_output_label">ZIP output</string>
+    <string name="batch_zip_flat">No folder</string>
+    <string name="batch_zip_grouped">Grouped</string>
+    <string name="batch_zip_flat_help">Files go directly into the folder you pick.</string>
+    <string name="batch_zip_grouped_help">Files go into a new subfolder named after the .zip.</string>
     <string name="batch_output_subfolder">Decrypted</string>
     <string name="batch_progress">%1$d / %2$d</string>
+    <string name="batch_cancel">Cancel</string>
+    <string name="batch_format_fallback_warning">Non-game files (DLC, patches, system) will be saved as .cia regardless of the selected format.</string>
+    <string name="batch_done_summary">Done: %1$d ok / %2$d skipped / %3$d failed</string>
+    <string name="batch_overall_progress">Overall</string>
+    <string name="batch_file_progress">Current file</string>
 
     <string name="about_title">About</string>
     <string name="about_version">Version %1$s</string>
@@ -34,6 +56,12 @@
     <string name="about_license_show">Show full MIT License</string>
     <string name="about_license_hide">Hide full MIT License</string>
     <string name="about_license_full">MIT License\n\nCopyright (c) 2026 cia3ds-android contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.</string>
+    <string name="about_app_title">App</string>
+    <string name="about_engine_label">Engine</string>
+    <string name="about_appearance_title">Appearance</string>
+    <string name="about_appearance_system">System</string>
+    <string name="about_appearance_light">Light</string>
+    <string name="about_appearance_dark">Dark</string>
     <string name="about_contributors_title">Contributors</string>
     <string name="about_contributors">• Hinoaaaaaf212 (https://github.com/Hinoaaaaaf212)</string>
     <string name="about_license_third_party_title">Third-party components</string>
@@ -47,4 +75,7 @@
     <string name="notif_channel_name">Decryption progress</string>
     <string name="notif_title">Decrypting</string>
     <string name="notif_text">%1$d / %2$d files</string>
+    <string name="notif_text_with_failures">%1$d / %2$d files - %3$d failed</string>
+    <string name="notif_done_title">Decryption finished</string>
+    <string name="notif_done_text">%1$d ok / %2$d skipped / %3$d failed</string>
 </resources>
