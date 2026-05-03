@@ -82,16 +82,7 @@ class SeedFetcher(private val appCtx: Context) {
             null
         }
 
-    fun toHex(bytes: ByteArray): String = buildString(bytes.size * 2) {
-        for (b in bytes) {
-            val v = b.toInt() and 0xff
-            append(HEX[v ushr 4])
-            append(HEX[v and 0xf])
-        }
-    }
-
     companion object {
         private val COUNTRIES = listOf("US", "JP", "GB", "DE", "FR", "ES", "IT", "NL", "AU")
-        private val HEX = "0123456789abcdef".toCharArray()
     }
 }

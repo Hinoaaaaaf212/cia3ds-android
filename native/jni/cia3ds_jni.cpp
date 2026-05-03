@@ -569,6 +569,11 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
                info.title_id.empty() ? "(unknown)" : info.title_id.c_str(),
                info.title_version.c_str(),
                (int)info.kind, (int)info.already_decrypted, (int)info.is_3ds);
+    sink.emitf("META: title_id=%s",
+               info.title_id.empty() ? "" : info.title_id.c_str());
+    sink.emitf("META: kind=%s", kind_to_suffix(info.kind));
+    sink.emitf("META: version=%s",
+               info.title_version.empty() ? "0" : info.title_version.c_str());
 
     std::string cdn_seed_hex;
     if (!info.title_id.empty() && seedFetcherCallback) {
@@ -780,6 +785,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     }
 
     std::string final_input = output_path;
+    bool produced_ncsd = false;
     if (wantCci && info.kind == CiaKind::Game) {
         std::string cci_path = work + "/output.cci";
         sink.emitf("$ makerom -ciatocci %s -o %s",
@@ -798,8 +804,13 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             sink.emit("WARN: ciatocci failed; keeping CIA");
         } else {
             final_input = cci_path;
+            produced_ncsd = true;
         }
+    } else if (wantCci) {
+        sink.emitf("WARN: %s is not a Game title; keeping CIA",
+                   kind_to_suffix(info.kind));
     }
+    sink.emitf("META: format_actual=%s", produced_ncsd ? "ncsd" : "cia");
 
     progress.post(90, "Saving output");
     if (!copy_path_to_fd(final_input, outFd)) {

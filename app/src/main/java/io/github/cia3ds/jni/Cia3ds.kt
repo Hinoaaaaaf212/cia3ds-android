@@ -105,13 +105,23 @@ class Cia3ds private constructor(private val appCtx: Context) {
         format: OutputFormat,
         originalName: String,
     ): Flow<DecryptUpdate> = callbackFlow {
+        var meta = DecryptMetadata()
         val result = decrypt(
             input = input,
             output = output,
             format = format,
             originalName = originalName,
             progressEmit = { pct, msg -> trySend(DecryptUpdate.Progress(pct, msg)) },
-            logEmit = { line -> trySend(DecryptUpdate.Log(line)) },
+            logEmit = { line ->
+                trySend(DecryptUpdate.Log(line))
+                if (line.trim().startsWith("META:")) {
+                    val updated = meta.mergedWith(line)
+                    if (updated != meta) {
+                        meta = updated
+                        trySend(DecryptUpdate.Metadata(meta))
+                    }
+                }
+            },
         )
         send(DecryptUpdate.Finished(result))
         close()
@@ -157,9 +167,68 @@ sealed interface DecryptResult {
     data class Failure(val message: String) : DecryptResult
 }
 
+data class DecryptMetadata(
+    val titleId: String? = null,
+    val kind: TitleKind? = null,
+    val version: String? = null,
+    val actualFormat: ActualFormat? = null,
+) {
+    fun mergedWith(line: String): DecryptMetadata {
+        val m = META_RE.matchEntire(line.trim()) ?: return this
+        val key = m.groupValues[1]
+        val value = m.groupValues[2]
+        return when (key) {
+            "title_id" -> copy(titleId = value.takeIf { it.isNotEmpty() })
+            "kind" -> copy(kind = TitleKind.fromNative(value))
+            "version" -> copy(version = value.takeIf { it.isNotEmpty() })
+            "format_actual" -> copy(actualFormat = ActualFormat.fromNative(value))
+            else -> this
+        }
+    }
+
+    companion object {
+        private val META_RE = Regex("""META:\s*([a-z_]+)=(.*)""")
+    }
+}
+
+enum class TitleKind(val display: String) {
+    Game("Game"),
+    Demo("Demo"),
+    System("System"),
+    DLC("DLC"),
+    Patch("Update"),
+    TWL("DSiWare"),
+    Unknown("Unknown");
+
+    companion object {
+        fun fromNative(s: String): TitleKind = when (s) {
+            "Game" -> Game
+            "Demo" -> Demo
+            "System" -> System
+            "DLC" -> DLC
+            "Patch" -> Patch
+            "TWL" -> TWL
+            else -> Unknown
+        }
+    }
+}
+
+enum class ActualFormat {
+    Cia,
+    Ncsd;
+    companion object {
+        fun fromNative(s: String): ActualFormat? = when (s) {
+            "cia" -> Cia
+            "ncsd" -> Ncsd
+            else -> null
+        }
+    }
+}
+
 sealed interface DecryptUpdate {
     data class Progress(val percent: Int, val message: String) : DecryptUpdate
     data class Log(val line: String) : DecryptUpdate
+    data class Metadata(val metadata: DecryptMetadata) : DecryptUpdate
     data class Finished(val result: DecryptResult) : DecryptUpdate
 }
 
