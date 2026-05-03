@@ -13,14 +13,15 @@ games) that installs in any 3DS emulator that accepts plaintext content
 
 ## Screenshots
 
-|                          Single, idle                          |                          Single, decrypting                          |                       Batch                        |
-| :------------------------------------------------------------: | :------------------------------------------------------------------: | :------------------------------------------------: |
-| ![Single screen, idle](docs/screenshots/single-idle.png) | ![Single screen, decryption in progress](docs/screenshots/single-progress.png) | ![Batch screen](docs/screenshots/batch.png) |
+|                          Idle                          |                          Decrypting                          |
+| :----------------------------------------------------: | :----------------------------------------------------------: |
+| ![Decrypt screen, idle](docs/screenshots/single-idle.png) | ![Decrypt screen, decryption in progress](docs/screenshots/single-progress.png) |
 
 ## Status
 
-Actively in early development. Core pipeline (ctrtool extract → NCCH-flags
-patch → makerom rebuild) 
+Actively in early development. Core pipeline (ctrtool extract, NCCH-flags
+patch, makerom rebuild)
+
 ## Build
 
 Requirements:
@@ -45,17 +46,37 @@ with `adb install` or transfer to the device manually.
 
 ## Usage
 
-1. Open the app, **Single** tab.
-2. Tap *Choose a .cia or .3ds file* and pick a file from device storage,
-   `/sdcard/Download`, an SD card, etc.
-3. (Optional) Toggle *Convert to .cci* for cleaner emulator imports of
-   eShop/cartridge games.
-4. Tap *Save decrypted file*, choose a destination, then *Decrypt*.
+The app has a single **Decrypt** tab that handles one file or many.
 
-Batch mode lives in the **Batch** tab: pick a folder, the app finds all
-`.cia`/`.3ds` files inside, then writes a sibling `Decrypted/` directory
-under the same tree. The job runs in a foreground service so it survives
-backgrounding.
+### Single file
+
+1. Tap *Choose a .cia or .3ds file* and pick the file.
+2. Pick the output format: `.cia`, `.cci`, or `.3ds` (the latter two only
+   apply to game titles; DLC, updates, and system titles fall back to `.cia`
+   automatically with a warning).
+3. Tap *Decrypt and save*, choose a destination filename, and watch
+   progress on the right pane.
+
+### Multiple files (zip)
+
+1. Tap *Choose a .zip file* and pick a zip containing one or more
+   `.cia`/`.3ds` files.
+   - If the zip has one entry inside, it acts like a single file (save-as).
+   - If it has multiple entries, the app switches to batch mode.
+2. Pick the output format and the output structure:
+   - *No folder*: outputs go directly into the folder you pick.
+   - *Grouped*: outputs go into a new subfolder named after the zip.
+3. Tap *Decrypt all* and pick an output folder.
+
+Batch jobs run in a foreground service so they survive backgrounding. Zip
+entries are extracted lazily, one at a time, so cache pressure stays low
+even for large archives.
+
+### Picking from Downloads
+
+Android 11+ blocks granting tree access to the root of `Downloads`. Pick a
+`.zip` file (file picker, not folder) to bypass this, or pick a subfolder
+of Downloads instead of `Downloads` itself.
 
 ### Android TV / handhelds
 
