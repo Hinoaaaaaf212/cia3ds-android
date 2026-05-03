@@ -20,10 +20,7 @@ games) that installs in any 3DS emulator that accepts plaintext content
 ## Status
 
 Actively in early development. Core pipeline (ctrtool extract → NCCH-flags
-patch → makerom rebuild) is implemented in native code. UI scaffolding,
-SAF-based file picking, and a foreground service for batch jobs are wired
-up. 
-
+patch → makerom rebuild) 
 ## Build
 
 Requirements:
