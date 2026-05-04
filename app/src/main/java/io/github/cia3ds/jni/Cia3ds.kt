@@ -88,6 +88,7 @@ class Cia3ds private constructor(private val appCtx: Context) {
             when (rc) {
                 0 -> DecryptResult.Success
                 10, 11 -> DecryptResult.AlreadyDecrypted
+                12 -> DecryptResult.Failure("Not a recognised CIA/3DS (already decrypted, wrong file type, or corrupt)")
                 else -> DecryptResult.Failure("Engine error code $rc")
             }
         } catch (t: Throwable) {

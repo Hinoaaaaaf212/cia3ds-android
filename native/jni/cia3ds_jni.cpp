@@ -297,6 +297,7 @@ struct CiaInfo {
     bool already_decrypted = false;
     bool is_3ds = false;
     CiaKind kind = CiaKind::Unknown;
+    int info_rc = 0;
 };
 
 CiaKind classify_kind(const std::string &title_id_hex) {
@@ -336,6 +337,7 @@ CiaInfo run_ctrtool_info(const std::string &input_path,
     std::string text = cap.read();
     sink.emitBlock(text);
     sink.emitf("[ctrtool --info exit=%d]", rc);
+    out.info_rc = rc;
 
     std::regex tid_re(R"(Title\s+[iI][dD]\s*:\s*([0-9a-fA-F]{16}))");
     std::smatch m;
@@ -476,7 +478,7 @@ const char *kind_to_suffix(CiaKind k) {
         case CiaKind::DLC: return "DLC";
         case CiaKind::Patch: return "Patch";
         case CiaKind::TWL: return "TWL";
-        default: return "Decrypted";
+        default: return "Unknown";
     }
 }
 
@@ -574,6 +576,17 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     sink.emitf("META: kind=%s", kind_to_suffix(info.kind));
     sink.emitf("META: version=%s",
                info.title_version.empty() ? "0" : info.title_version.c_str());
+
+    if (info.info_rc != 0 && info.title_id.empty()) {
+        sink.emit("ERR: ctrtool could not identify this file as a CIA or 3DS.");
+        sink.emit("Most common reasons:");
+        sink.emit("  - The file is already decrypted (re-running an output is a no-op).");
+        sink.emit("  - The file is not a Nintendo 3DS CIA/3DS at all.");
+        sink.emit("  - The file is corrupt or truncated.");
+        sink.emit("Pick a still-encrypted .cia or .3ds and try again.");
+        rmtree(work);
+        return 12;
+    }
 
     std::string cdn_seed_hex;
     if (!info.title_id.empty() && seedFetcherCallback) {
