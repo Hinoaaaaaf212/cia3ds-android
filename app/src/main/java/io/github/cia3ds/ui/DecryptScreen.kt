@@ -247,7 +247,7 @@ fun DecryptScreen() {
                     }
                 }
             } catch (_: CancellationException) {
-                logLines += "WARN: cancelled by user (engine will keep running in background until current step completes)"
+                logLines += "Cancelled by user."
                 isRunning = false
                 runningJob = null
                 lastResult = DecryptResult.Failure(ctx.getString(R.string.single_cancelled))
@@ -572,6 +572,7 @@ fun DecryptScreen() {
                         OutlinedButton(
                             modifier = Modifier.fillMaxWidth(),
                             onClick = {
+                                runCatching { Cia3ds.get(ctx).cancel() }
                                 runningJob?.cancel()
                                 service?.cancel()
                             },
@@ -608,7 +609,10 @@ fun DecryptScreen() {
             if (isBatch) {
                 BatchStateBlock(
                     state = batchState?.value,
-                    onCancel = { service?.cancel() },
+                    onCancel = {
+                        runCatching { Cia3ds.get(ctx).cancel() }
+                        service?.cancel()
+                    },
                 )
                 LogPanel(
                     lines = (batchState?.value as? BatchState.Running)?.currentLog ?: emptyList(),

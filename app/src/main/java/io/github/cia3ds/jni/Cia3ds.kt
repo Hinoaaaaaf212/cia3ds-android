@@ -35,7 +35,18 @@ class Cia3ds private constructor(private val appCtx: Context) {
 
     private external fun nativeVersion(): String
 
+    private external fun nativeCancel()
+
     fun version(): String = nativeVersion()
+
+    /**
+     * Asks the engine to stop at its next safe checkpoint. Safe to call from any
+     * thread. The native side returns rc=13 from [decrypt] when it observes the
+     * flag.
+     */
+    fun cancel() {
+        runCatching { nativeCancel() }
+    }
 
     suspend fun decrypt(
         input: Uri,
@@ -89,6 +100,7 @@ class Cia3ds private constructor(private val appCtx: Context) {
                 0 -> DecryptResult.Success
                 10, 11 -> DecryptResult.AlreadyDecrypted
                 12 -> DecryptResult.Failure("Not a recognised CIA/3DS (already decrypted, wrong file type, or corrupt)")
+                13 -> DecryptResult.Failure("Cancelled by user")
                 6 -> DecryptResult.Failure("Could not find any NCCH partitions in this file (malformed, truncated, or unusual layout)")
                 5 -> DecryptResult.Failure("ctrtool could not extract partitions (file may be corrupt, truncated, or missing keys/seed)")
                 1 -> DecryptResult.Failure("Could not create the engine's work directory (out of storage, or app cache unwritable)")

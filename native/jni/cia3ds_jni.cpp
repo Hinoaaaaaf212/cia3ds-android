@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <atomic>
 #include <cerrno>
 #include <cinttypes>
 #include <cstdio>
@@ -32,6 +33,10 @@ int ctrtool_main(int argc, char *argv[], char *envp[]);
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
+
+// Set from JNI by Cia3ds.cancel(); checked between major engine steps.
+// Reset to false at the start of every nativeDecryptCia call.
+std::atomic<bool> g_cancel{false};
 
 enum class CiaKind {
     Game = 0,
@@ -532,6 +537,21 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     sink.emitf("== cia3ds: decrypt %s (wantCci=%d) ==",
                orig_name.c_str(), (int)wantCci);
 
+    g_cancel.store(false, std::memory_order_relaxed);
+
+    auto cancelled = [&]() -> bool {
+        return g_cancel.load(std::memory_order_relaxed);
+    };
+
+    // Set after the work dir is created so cancel cleanup has somewhere to point.
+    std::string work_for_cleanup;
+    auto bail_if_cancelled = [&]() -> bool {
+        if (!cancelled()) return false;
+        sink.emit("Cancelled by user.");
+        if (!work_for_cleanup.empty()) rmtree(work_for_cleanup);
+        return true;
+    };
+
     auto emit_workdir_help = [&]() {
         sink.emit("Most common reasons:");
         sink.emit("  - The device is out of free storage.");
@@ -551,6 +571,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         emit_workdir_help();
         return 1;
     }
+    work_for_cleanup = work;
 
     std::string input_path  = work + "/input.bin";
     std::string output_path = work + "/output.bin";
@@ -580,6 +601,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         }
     }
 
+    if (bail_if_cancelled()) return 13;
     progress.post(10, "Reading metadata");
     CiaInfo info = run_ctrtool_info(input_path, seeddb_path, log_path, sink);
     sink.emitf("metadata: title=%s version=%s kind=%d already=%d is_3ds=%d",
@@ -636,6 +658,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         return 10; // rc=10: already-decrypted sentinel
     }
 
+    if (bail_if_cancelled()) return 13;
     progress.post(20, "Extracting partitions");
     {
         std::string contents_prefix = contents_dir + "/c";
@@ -716,8 +739,10 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         sink.emit("Try re-downloading the file, free up space, and try again.");
     };
 
+    if (bail_if_cancelled()) return 13;
     progress.post(50, "Decrypting NCCH regions");
     for (auto &p : partitions) {
+        if (bail_if_cancelled()) return 13;
         NcchRegions reg;
         if (!read_ncch_regions(p.path, reg)) {
             sink.emitf("ERR: cannot read NCCH header from %s", p.path.c_str());
@@ -766,7 +791,13 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         }
 
         struct stat st;
-        if (reg.exhdr_size > 0 && stat(eh_path.c_str(), &st) == 0) {
+        if (reg.exhdr_size > 0) {
+            if (stat(eh_path.c_str(), &st) != 0) {
+                sink.emitf("ERR: ctrtool reported success but the exheader region file is missing (%s).",
+                           eh_path.c_str());
+                emit_region_help();
+                return 9;
+            }
             sink.emitf("  splicing exheader (%lld bytes) -> 0x%llx",
                        (long long)st.st_size, (unsigned long long)reg.exhdr_off);
             if (!splice_region(p.path, reg.exhdr_off, eh_path)) {
@@ -775,7 +806,13 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
                 return 9;
             }
         }
-        if (reg.exefs_size > 0 && stat(ef_path.c_str(), &st) == 0) {
+        if (reg.exefs_size > 0) {
+            if (stat(ef_path.c_str(), &st) != 0) {
+                sink.emitf("ERR: ctrtool reported success but the exefs region file is missing (%s).",
+                           ef_path.c_str());
+                emit_region_help();
+                return 9;
+            }
             sink.emitf("  splicing exefs (%lld bytes) -> 0x%llx",
                        (long long)st.st_size, (unsigned long long)reg.exefs_off);
             if (!splice_region(p.path, reg.exefs_off, ef_path)) {
@@ -784,7 +821,13 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
                 return 9;
             }
         }
-        if (reg.romfs_size > 0 && stat(rf_path.c_str(), &st) == 0) {
+        if (reg.romfs_size > 0) {
+            if (stat(rf_path.c_str(), &st) != 0) {
+                sink.emitf("ERR: ctrtool reported success but the romfs region file is missing (%s).",
+                           rf_path.c_str());
+                emit_region_help();
+                return 9;
+            }
             sink.emitf("  splicing romfs (%lld bytes) -> 0x%llx",
                        (long long)st.st_size, (unsigned long long)reg.romfs_off);
             if (!splice_region(p.path, reg.romfs_off, rf_path)) {
@@ -804,6 +847,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         }
     }
 
+    if (bail_if_cancelled()) return 13;
     progress.post(75, "Rebuilding CIA");
     {
         Argv argv({
@@ -857,6 +901,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     std::string final_input = output_path;
     bool produced_ncsd = false;
     if (wantCci && info.kind == CiaKind::Game) {
+        if (bail_if_cancelled()) return 13;
         std::string cci_path = work + "/output.cci";
         sink.emitf("$ makerom -ciatocci %s -o %s",
                    output_path.c_str(), cci_path.c_str());
@@ -908,4 +953,9 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
 extern "C" JNIEXPORT jstring JNICALL
 Java_io_github_cia3ds_jni_Cia3ds_nativeVersion(JNIEnv *env, jobject /*thiz*/) {
     return env->NewStringUTF("cia3ds 1.0.0 (ctrtool+makerom)");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_github_cia3ds_jni_Cia3ds_nativeCancel(JNIEnv * /*env*/, jobject /*thiz*/) {
+    g_cancel.store(true, std::memory_order_relaxed);
 }

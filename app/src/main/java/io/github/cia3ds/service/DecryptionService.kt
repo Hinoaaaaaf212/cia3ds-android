@@ -150,6 +150,7 @@ class DecryptionService : Service() {
     }
 
     fun cancel() {
+        runCatching { Cia3ds.get(this).cancel() }
         batchJob?.cancel()
         batchJob = null
         _state.value = BatchState.Idle
