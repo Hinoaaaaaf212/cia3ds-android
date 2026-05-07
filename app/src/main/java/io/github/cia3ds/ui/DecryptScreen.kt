@@ -28,12 +28,15 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -55,10 +58,14 @@ import io.github.cia3ds.jni.DecryptResult
 import io.github.cia3ds.jni.DecryptUpdate
 import io.github.cia3ds.jni.OutputFormat
 import io.github.cia3ds.jni.TitleKind
+import io.github.cia3ds.prefs.applyTemplate
 import io.github.cia3ds.service.BatchItem
 import io.github.cia3ds.service.BatchSource
 import io.github.cia3ds.service.BatchState
 import io.github.cia3ds.service.DecryptionService
+import io.github.cia3ds.util.SpaceCheckResult
+import io.github.cia3ds.util.checkFreeSpace
+import io.github.cia3ds.util.formatBytes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -76,6 +83,8 @@ fun DecryptScreen() {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val service = rememberBoundService(ctx)
+    val outputTemplateState = LocalOutputTemplate.current
+    val incomingUriState = LocalIncomingUri.current
 
     var inputMode by remember { mutableStateOf(InputMode.None) }
 
@@ -101,6 +110,8 @@ fun DecryptScreen() {
     var pendingTempFile by remember { mutableStateOf<File?>(null) }
 
     val batchState = service?.state?.collectAsState()
+
+    var pendingLowSpace by remember { mutableStateOf<PendingSpaceWarning?>(null) }
 
     val isBatch = when (inputMode) {
         InputMode.Zip -> zipEntryCount > 1
@@ -256,6 +267,45 @@ fun DecryptScreen() {
         }
     }
 
+    fun startSingleAfterOutputPicked(outUri: Uri) {
+        when (inputMode) {
+            InputMode.SingleFile -> {
+                val inUri = singleFileUri ?: return
+                launchSingleDecrypt(inUri, outUri, singleFileName ?: "input", null)
+            }
+            InputMode.Zip -> {
+                val zipUri = pickedZipUri ?: return
+                val firstEntry = zipEntryNames.firstOrNull() ?: return
+                isRunning = true
+                status = "Extracting from zip…"
+                percent = 0
+                logLines.clear()
+                logLines += "extracting $firstEntry…"
+                runningJob = scope.launch {
+                    val pair = withContext(Dispatchers.IO) {
+                        extractZipEntryToTemp(ctx, zipUri, firstEntry)
+                    }
+                    if (pair == null) {
+                        logLines += "ERR: could not extract entry from zip"
+                        isRunning = false
+                        runningJob = null
+                        lastResult = DecryptResult.Failure("zip extract failed")
+                        status = ctx.getString(R.string.error_generic, "zip extract failed")
+                        return@launch
+                    }
+                    val (extracted, displayName) = pair
+                    launchSingleDecrypt(
+                        Uri.fromFile(extracted),
+                        outUri,
+                        "${pickedZipName ?: "zip"} / $displayName",
+                        extracted,
+                    )
+                }
+            }
+            else -> {}
+        }
+    }
+
     val pickOutputFile = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
@@ -266,44 +316,46 @@ fun DecryptScreen() {
                 )
             }
             output = uri
-            when (inputMode) {
-                InputMode.SingleFile -> {
-                    val inUri = singleFileUri ?: return@rememberLauncherForActivityResult
-                    launchSingleDecrypt(inUri, uri, singleFileName ?: "input", null)
-                }
-                InputMode.Zip -> {
-                    val zipUri = pickedZipUri ?: return@rememberLauncherForActivityResult
-                    val entryNamesSnapshot = zipEntryNames
-                    val firstEntry = entryNamesSnapshot.firstOrNull()
-                        ?: return@rememberLauncherForActivityResult
-                    isRunning = true
-                    status = "Extracting from zip…"
-                    percent = 0
-                    logLines.clear()
-                    logLines += "extracting $firstEntry…"
-                    runningJob = scope.launch {
-                        val pair = withContext(Dispatchers.IO) {
-                            extractZipEntryToTemp(ctx, zipUri, firstEntry)
-                        }
-                        if (pair == null) {
-                            logLines += "ERR: could not extract entry from zip"
-                            isRunning = false
-                            runningJob = null
-                            lastResult = DecryptResult.Failure("zip extract failed")
-                            status = ctx.getString(R.string.error_generic, "zip extract failed")
-                            return@launch
-                        }
-                        val (extracted, displayName) = pair
-                        launchSingleDecrypt(
-                            Uri.fromFile(extracted),
-                            uri,
-                            "${pickedZipName ?: "zip"} / $displayName",
-                            extracted,
-                        )
-                    }
-                }
-                else -> {}
+            val inputBytes = singleInputSizeBytes(
+                ctx,
+                inputMode,
+                singleFileUri,
+                pickedZipUri,
+                zipEntryNames.firstOrNull(),
+            )
+            val check = checkFreeSpace(ctx, inputBytes, uri)
+            if (check is SpaceCheckResult.Low) {
+                pendingLowSpace = PendingSpaceWarning.Single(uri, check.available, check.needed)
+            } else {
+                startSingleAfterOutputPicked(uri)
             }
+        }
+    }
+
+    fun startBatchAfterTreePicked(uri: Uri) {
+        val zipUri = pickedZipUri ?: return
+        val zipName = pickedZipName ?: "archive.zip"
+        val entryNamesSnapshot = zipEntryNames.toList()
+        val capturedFormat = format
+        val capturedGrouped = zipGrouped
+        val capturedTemplate = outputTemplateState.value
+        scope.launch {
+            val items = withContext(Dispatchers.IO) {
+                val outDir = DocumentFile.fromTreeUri(ctx, uri) ?: return@withContext null
+                buildBatchItemsForZip(
+                    zipUri = zipUri,
+                    zipName = zipName,
+                    entryNames = entryNamesSnapshot,
+                    outDir = outDir,
+                    format = capturedFormat,
+                    zipGrouped = capturedGrouped,
+                    template = capturedTemplate,
+                )
+            } ?: emptyList()
+            if (items.isEmpty()) return@launch
+            val intent = Intent(ctx, DecryptionService::class.java)
+            ctx.startForegroundService(intent)
+            service?.startBatch(items, capturedFormat)
         }
     }
 
@@ -319,26 +371,12 @@ fun DecryptScreen() {
                 )
             }
             val zipUri = pickedZipUri ?: return@rememberLauncherForActivityResult
-            val zipName = pickedZipName ?: "archive.zip"
-            val entryNamesSnapshot = zipEntryNames.toList()
-            val capturedFormat = format
-            val capturedGrouped = zipGrouped
-            scope.launch {
-                val items = withContext(Dispatchers.IO) {
-                    val outDir = DocumentFile.fromTreeUri(ctx, uri) ?: return@withContext null
-                    buildBatchItemsForZip(
-                        zipUri = zipUri,
-                        zipName = zipName,
-                        entryNames = entryNamesSnapshot,
-                        outDir = outDir,
-                        format = capturedFormat,
-                        zipGrouped = capturedGrouped,
-                    )
-                } ?: emptyList()
-                if (items.isEmpty()) return@launch
-                val intent = Intent(ctx, DecryptionService::class.java)
-                ctx.startForegroundService(intent)
-                service?.startBatch(items, capturedFormat)
+            val totalBytes = batchInputSizeBytes(ctx, zipUri, zipEntryNames)
+            val check = checkFreeSpace(ctx, totalBytes, uri)
+            if (check is SpaceCheckResult.Low) {
+                pendingLowSpace = PendingSpaceWarning.Batch(uri, check.available, check.needed)
+            } else {
+                startBatchAfterTreePicked(uri)
             }
         }
     }
@@ -518,7 +556,9 @@ fun DecryptScreen() {
                                     InputMode.Zip -> pickedZipName?.substringBeforeLast('.')
                                     else -> null
                                 } ?: "decrypted"
-                                pickOutputFile.launch("$baseName-decrypted.${format.extension}")
+                                pickOutputFile.launch(
+                                    applyTemplate(outputTemplateState.value, baseName, format)
+                                )
                             }
                         },
                     ) {
@@ -605,6 +645,80 @@ fun DecryptScreen() {
                 )
             }
         }
+    }
+
+    pendingLowSpace?.let { warn ->
+        AlertDialog(
+            onDismissRequest = { pendingLowSpace = null },
+            title = { Text(stringResource(R.string.space_low_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        R.string.space_low_message,
+                        formatBytes(warn.available),
+                        formatBytes(warn.needed),
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val w = pendingLowSpace
+                    pendingLowSpace = null
+                    when (w) {
+                        is PendingSpaceWarning.Single -> startSingleAfterOutputPicked(w.output)
+                        is PendingSpaceWarning.Batch -> startBatchAfterTreePicked(w.tree)
+                        null -> {}
+                    }
+                }) { Text(stringResource(R.string.space_low_continue)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingLowSpace = null }) {
+                    Text(stringResource(R.string.space_low_cancel))
+                }
+            },
+        )
+    }
+
+    LaunchedEffect(incomingUriState.value) {
+        val uri = incomingUriState.value ?: return@LaunchedEffect
+        val name = DocumentFile.fromSingleUri(ctx, uri)?.name
+        val lower = name?.lowercase() ?: ""
+        when {
+            lower.endsWith(".zip") -> {
+                runCatching {
+                    ctx.contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                resetForNewInput()
+                singleFileError = null
+                inputMode = InputMode.Zip
+                pickedZipUri = uri
+                pickedZipName = name
+                zipScanning = true
+                scope.launch {
+                    val names = withContext(Dispatchers.IO) { listZipEntries(ctx, uri) }
+                    zipEntryNames = names
+                    zipScanning = false
+                }
+            }
+            lower.endsWith(".cia") || lower.endsWith(".3ds") -> {
+                runCatching {
+                    ctx.contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                resetForNewInput()
+                singleFileError = null
+                inputMode = InputMode.SingleFile
+                singleFileUri = uri
+                singleFileName = name
+            }
+            else -> {
+                singleFileError = ctx.getString(R.string.incoming_unsupported)
+            }
+        }
+        incomingUriState.value = null
     }
 }
 
@@ -816,6 +930,7 @@ private fun buildBatchItemsForZip(
     outDir: DocumentFile,
     format: OutputFormat,
     zipGrouped: Boolean,
+    template: String,
 ): List<BatchItem> {
     val zipBaseName = zipName.substringBeforeLast('.').ifBlank { "archive" }
     val targetDir: DocumentFile = if (zipGrouped) {
@@ -829,7 +944,7 @@ private fun buildBatchItemsForZip(
     for (entryName in entryNames) {
         val entryFileName = entryName.substringAfterLast('/')
         val baseName = entryFileName.substringBeforeLast('.')
-        val outName = "$baseName-decrypted.${format.extension}"
+        val outName = applyTemplate(template, baseName, format)
         val outFile = targetDir.findFile(outName)?.also { it.delete() }
             .let { targetDir.createFile("application/octet-stream", outName) }
             ?: continue
@@ -842,6 +957,77 @@ private fun buildBatchItemsForZip(
         )
     }
     return out
+}
+
+private sealed interface PendingSpaceWarning {
+    val available: Long
+    val needed: Long
+
+    data class Single(val output: Uri, override val available: Long, override val needed: Long) : PendingSpaceWarning
+    data class Batch(val tree: Uri, override val available: Long, override val needed: Long) : PendingSpaceWarning
+}
+
+private fun singleInputSizeBytes(
+    ctx: Context,
+    inputMode: InputMode,
+    singleFileUri: Uri?,
+    pickedZipUri: Uri?,
+    firstZipEntry: String?,
+): Long {
+    return when (inputMode) {
+        InputMode.SingleFile -> {
+            val u = singleFileUri ?: return 0L
+            DocumentFile.fromSingleUri(ctx, u)?.length()?.takeIf { it > 0 } ?: 0L
+        }
+        InputMode.Zip -> {
+            val u = pickedZipUri ?: return 0L
+            val entry = firstZipEntry ?: return 0L
+            zipEntrySize(ctx, u, entry)
+        }
+        else -> 0L
+    }
+}
+
+private fun batchInputSizeBytes(ctx: Context, zipUri: Uri, entryNames: List<String>): Long {
+    if (entryNames.isEmpty()) return 0L
+    val wanted = entryNames.toHashSet()
+    var total = 0L
+    runCatching {
+        ctx.contentResolver.openInputStream(zipUri)?.use { input ->
+            ZipInputStream(input).use { zin ->
+                var entry = zin.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && entry.name in wanted) {
+                        if (entry.size > 0) total += entry.size
+                    }
+                    zin.closeEntry()
+                    entry = zin.nextEntry
+                }
+            }
+        }
+    }
+    return total
+}
+
+private fun zipEntrySize(ctx: Context, zipUri: Uri, entryName: String): Long {
+    var size = 0L
+    runCatching {
+        ctx.contentResolver.openInputStream(zipUri)?.use { input ->
+            ZipInputStream(input).use { zin ->
+                var entry = zin.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && entry.name == entryName) {
+                        if (entry.size > 0) size = entry.size
+                        zin.closeEntry()
+                        return@runCatching
+                    }
+                    zin.closeEntry()
+                    entry = zin.nextEntry
+                }
+            }
+        }
+    }
+    return size
 }
 
 private const val MAX_LOG_LINES = 2000
