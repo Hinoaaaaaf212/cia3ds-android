@@ -39,11 +39,6 @@ class Cia3ds private constructor(private val appCtx: Context) {
 
     fun version(): String = nativeVersion()
 
-    /**
-     * Asks the engine to stop at its next safe checkpoint. Safe to call from any
-     * thread. The native side returns rc=13 from [decrypt] when it observes the
-     * flag.
-     */
     fun cancel() {
         runCatching { nativeCancel() }
     }

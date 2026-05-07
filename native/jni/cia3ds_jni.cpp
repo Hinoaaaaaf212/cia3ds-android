@@ -34,8 +34,6 @@ int ctrtool_main(int argc, char *argv[], char *envp[]);
 
 namespace {
 
-// Set from JNI by Cia3ds.cancel(); checked between major engine steps.
-// Reset to false at the start of every nativeDecryptCia call.
 std::atomic<bool> g_cancel{false};
 
 enum class CiaKind {
@@ -543,7 +541,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         return g_cancel.load(std::memory_order_relaxed);
     };
 
-    // Set after the work dir is created so cancel cleanup has somewhere to point.
     std::string work_for_cleanup;
     auto bail_if_cancelled = [&]() -> bool {
         if (!cancelled()) return false;
