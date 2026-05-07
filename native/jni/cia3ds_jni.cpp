@@ -532,14 +532,23 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     sink.emitf("== cia3ds: decrypt %s (wantCci=%d) ==",
                orig_name.c_str(), (int)wantCci);
 
+    auto emit_workdir_help = [&]() {
+        sink.emit("Most common reasons:");
+        sink.emit("  - The device is out of free storage.");
+        sink.emit("  - The app's cache directory is unwritable.");
+        sink.emit("Free up space (or clear the app's cache from Android settings) and try again.");
+    };
+
     if (!make_dir_p(tmp_dir)) {
         sink.emitf("ERR: cannot create tmp dir %s", tmp_dir.c_str());
+        emit_workdir_help();
         return 1;
     }
     std::string work = tmp_dir + "/work";
     rmtree(work);
     if (!make_dir_p(work)) {
         sink.emitf("ERR: cannot create work dir %s", work.c_str());
+        emit_workdir_help();
         return 1;
     }
 
@@ -549,12 +558,18 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     std::string log_path = work + "/tool.log";
     if (!make_dir_p(contents_dir)) {
         sink.emitf("ERR: cannot create contents dir %s", contents_dir.c_str());
+        emit_workdir_help();
         return 1;
     }
 
     progress.post(2, "Staging input");
     if (!copy_fd_to_path(inFd, input_path)) {
         sink.emitf("ERR: failed to stage input fd to %s", input_path.c_str());
+        sink.emit("Most common reasons:");
+        sink.emit("  - The device ran out of free storage while copying.");
+        sink.emit("  - The source file is on a removable drive that was disconnected.");
+        sink.emit("  - The source file is no longer reachable through the file picker.");
+        sink.emit("Free up space and re-pick the input file.");
         return 2;
     }
     {
@@ -608,7 +623,13 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         progress.post(100, "Already decrypted; nothing to do.");
         sink.emit("input is already decrypted; copying input to output");
         if (!copy_path_to_fd(input_path, outFd)) {
-            sink.emit("ERR: copy of input to output fd failed");
+            sink.emit("ERR: copy of input to output fd failed.");
+            sink.emit("The file is already decrypted and the engine tried to copy it to");
+            sink.emit("the output you picked, but the write failed.");
+            sink.emit("Most common reasons:");
+            sink.emit("  - The destination ran out of free storage.");
+            sink.emit("  - The destination folder is no longer writable.");
+            sink.emit("Free up space and pick the output again.");
             return 4;
         }
         rmtree(work);
@@ -635,6 +656,12 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         sink.emitBlock(out);
         sink.emitf("[ctrtool extract exit=%d]", rc);
         if (rc != 0) {
+            sink.emit("ERR: ctrtool failed while extracting partitions from this file.");
+            sink.emit("Most common reasons:");
+            sink.emit("  - The file is corrupt or truncated (incomplete download).");
+            sink.emit("  - A required title key or seed is missing for this title id.");
+            sink.emit("  - The file uses encryption keys this build cannot handle.");
+            sink.emit("Try re-downloading the file, or pick a different one.");
             return 5;
         }
     }
@@ -664,9 +691,15 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         }
         if (any_c_prefix) {
             sink.emit("ERR: ctrtool wrote partition files but with an unexpected naming pattern.");
-            sink.emit("This usually means the engine and ctrtool versions are out of sync.");
+            sink.emit("This usually means the engine and ctrtool versions are out of sync,");
+            sink.emit("which is a packaging bug rather than a problem with your file.");
+            sink.emit("Please report this with the log above so it can be fixed.");
         } else {
-            sink.emitf("ERR: no recognizable partitions in %s", contents_dir.c_str());
+            sink.emitf("ERR: ctrtool extracted files into %s, but none look like NCCH partitions.", contents_dir.c_str());
+            sink.emit("Most common reasons:");
+            sink.emit("  - The CIA/3DS is malformed or truncated.");
+            sink.emit("  - The title uses an unusual layout the engine doesn't recognise.");
+            sink.emit("Try re-downloading the file, or pick a different one.");
         }
         return 6;
     }
@@ -675,11 +708,20 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         sink.emitf("  slot=%d id=0x%08x %s", p.slot, p.content_id, p.path.c_str());
     }
 
+    auto emit_region_help = [&]() {
+        sink.emit("Most common reasons:");
+        sink.emit("  - The CIA/3DS is malformed or truncated.");
+        sink.emit("  - The device ran out of free storage mid-decryption.");
+        sink.emit("  - A required title key or seed is missing for this title id.");
+        sink.emit("Try re-downloading the file, free up space, and try again.");
+    };
+
     progress.post(50, "Decrypting NCCH regions");
     for (auto &p : partitions) {
         NcchRegions reg;
         if (!read_ncch_regions(p.path, reg)) {
             sink.emitf("ERR: cannot read NCCH header from %s", p.path.c_str());
+            emit_region_help();
             return 9;
         }
         sink.emitf("partition slot=%d regions: exhdr@0x%llx(%llu) exefs@0x%llx(%llu) romfs@0x%llx(%llu)",
@@ -689,7 +731,11 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
                    (unsigned long long)reg.romfs_off, (unsigned long long)reg.romfs_size);
 
         std::string region_dir = work + "/regions_" + std::to_string(p.slot);
-        if (!make_dir_p(region_dir)) return 9;
+        if (!make_dir_p(region_dir)) {
+            sink.emitf("ERR: cannot create region dir %s", region_dir.c_str());
+            emit_region_help();
+            return 9;
+        }
         std::string eh_path = region_dir + "/exheader.bin";
         std::string ef_path = region_dir + "/exefs.bin";
         std::string rf_path = region_dir + "/romfs.bin";
@@ -714,6 +760,8 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         sink.emitBlock(out);
         sink.emitf("[ctrtool decrypt-regions exit=%d]", rc);
         if (rc != 0) {
+            sink.emit("ERR: ctrtool failed while decrypting NCCH regions for this partition.");
+            emit_region_help();
             return 9;
         }
 
@@ -722,7 +770,8 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             sink.emitf("  splicing exheader (%lld bytes) -> 0x%llx",
                        (long long)st.st_size, (unsigned long long)reg.exhdr_off);
             if (!splice_region(p.path, reg.exhdr_off, eh_path)) {
-                sink.emit("ERR: failed to splice exheader");
+                sink.emit("ERR: failed to splice exheader back into the partition.");
+                emit_region_help();
                 return 9;
             }
         }
@@ -730,7 +779,8 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             sink.emitf("  splicing exefs (%lld bytes) -> 0x%llx",
                        (long long)st.st_size, (unsigned long long)reg.exefs_off);
             if (!splice_region(p.path, reg.exefs_off, ef_path)) {
-                sink.emit("ERR: failed to splice exefs");
+                sink.emit("ERR: failed to splice exefs back into the partition.");
+                emit_region_help();
                 return 9;
             }
         }
@@ -738,7 +788,8 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             sink.emitf("  splicing romfs (%lld bytes) -> 0x%llx",
                        (long long)st.st_size, (unsigned long long)reg.romfs_off);
             if (!splice_region(p.path, reg.romfs_off, rf_path)) {
-                sink.emit("ERR: failed to splice romfs");
+                sink.emit("ERR: failed to splice romfs back into the partition.");
+                emit_region_help();
                 return 9;
             }
         }
@@ -784,6 +835,12 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         sink.emitBlock(out);
         sink.emitf("[makerom rebuild exit=%d]", rc);
         if (rc != 0) {
+            sink.emit("ERR: makerom failed to rebuild the CIA from the decrypted partitions.");
+            sink.emit("Most common reasons:");
+            sink.emit("  - The decrypted partitions on disk got corrupted (often disk full).");
+            sink.emit("  - The title's metadata (kind/version) is in a shape makerom rejects.");
+            sink.emit("  - This is a bug in the engine; please report it with the log above.");
+            sink.emit("Free up space and try again, or pick a different file.");
             return 7;
         }
     }
@@ -827,7 +884,12 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
 
     progress.post(90, "Saving output");
     if (!copy_path_to_fd(final_input, outFd)) {
-        sink.emit("ERR: copy of result to caller fd failed");
+        sink.emit("ERR: copy of result to caller fd failed.");
+        sink.emit("The decrypt finished, but writing the output to the file you picked failed.");
+        sink.emit("Most common reasons:");
+        sink.emit("  - The destination ran out of free storage.");
+        sink.emit("  - The destination folder is no longer writable.");
+        sink.emit("Free up space and pick the output again.");
         rmtree(work);
         return 8;
     }

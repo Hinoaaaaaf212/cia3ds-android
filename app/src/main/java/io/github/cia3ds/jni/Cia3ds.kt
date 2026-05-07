@@ -89,6 +89,14 @@ class Cia3ds private constructor(private val appCtx: Context) {
                 0 -> DecryptResult.Success
                 10, 11 -> DecryptResult.AlreadyDecrypted
                 12 -> DecryptResult.Failure("Not a recognised CIA/3DS (already decrypted, wrong file type, or corrupt)")
+                6 -> DecryptResult.Failure("Could not find any NCCH partitions in this file (malformed, truncated, or unusual layout)")
+                5 -> DecryptResult.Failure("ctrtool could not extract partitions (file may be corrupt, truncated, or missing keys/seed)")
+                1 -> DecryptResult.Failure("Could not create the engine's work directory (out of storage, or app cache unwritable)")
+                2 -> DecryptResult.Failure("Could not stage the input file (out of storage, or source no longer reachable)")
+                4 -> DecryptResult.Failure("File was already decrypted, but copying it to the chosen output failed (out of storage, or destination unwritable)")
+                7 -> DecryptResult.Failure("makerom could not rebuild the CIA (out of storage, corrupt partitions, or unusual title metadata)")
+                8 -> DecryptResult.Failure("Decrypted, but writing the result to your chosen output failed (out of storage, or destination unwritable)")
+                9 -> DecryptResult.Failure("Could not decrypt or splice an NCCH region (file may be corrupt, truncated, or missing keys/seed)")
                 else -> DecryptResult.Failure("Engine error code $rc")
             }
         } catch (t: Throwable) {
