@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 fun LogPanel(
     lines: List<String>,
     onCopy: () -> Unit,
+    onSave: () -> Unit,
     modifier: Modifier = Modifier,
     title: String = "Log",
 ) {
@@ -43,7 +44,10 @@ fun LogPanel(
         ) {
             Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium)
             if (lines.isNotEmpty()) {
-                TextButton(onClick = onCopy) { Text("Copy") }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onSave) { Text("Save") }
+                    TextButton(onClick = onCopy) { Text("Copy") }
+                }
             }
         }
         if (lines.isEmpty()) {

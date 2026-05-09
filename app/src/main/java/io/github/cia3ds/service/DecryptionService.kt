@@ -15,6 +15,7 @@ import io.github.cia3ds.jni.Cia3ds
 import io.github.cia3ds.jni.DecryptResult
 import io.github.cia3ds.jni.OutputFormat
 import io.github.cia3ds.ui.MainActivity
+import io.github.cia3ds.util.LogStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,7 +51,11 @@ class DecryptionService : Service() {
             val tmpRoot = cacheDir.resolve("cia3ds-zip-tmp").apply { mkdirs() }
             val results = mutableListOf<BatchResult>()
             var failed = 0
+            LogStream.start(this@DecryptionService, append = false)
+            LogStream.append("== batch start: ${items.size} item(s) ==")
             items.forEachIndexed { index, item ->
+                LogStream.append("")
+                LogStream.append("== batch item ${index + 1}/${items.size}: ${item.displayName} ==")
                 val currentLog = mutableListOf<String>()
                 var currentPercent = 0
                 fun publish() {
@@ -72,6 +77,7 @@ class DecryptionService : Service() {
                         is BatchSource.Direct -> src.uri
                         is BatchSource.ZipEntry -> {
                             currentLog += "extracting ${src.entryName} from zip…"
+                            LogStream.append("extracting ${src.entryName} from zip…")
                             publish()
                             val tmp = extractEntryToTemp(src.zipUri, src.entryName, tmpRoot)
                             if (tmp == null) {
@@ -113,7 +119,11 @@ class DecryptionService : Service() {
                 }
                 if (r is DecryptResult.Failure) failed += 1
                 results += BatchResult(item.displayName, r, currentLog.toList())
+                LogStream.append("== batch item ${index + 1} result: $r ==")
             }
+            LogStream.append("")
+            LogStream.append("== batch done: ${results.size - failed} succeeded, $failed failed ==")
+            LogStream.stop()
             _state.value = BatchState.Done(results.toList(), format)
             stopForegroundCompat()
             postDoneNotification(results)
@@ -278,4 +288,4 @@ sealed interface BatchState {
     ) : BatchState
 }
 
-private const val MAX_PER_FILE_LOG = 2000
+private const val MAX_PER_FILE_LOG = 50000

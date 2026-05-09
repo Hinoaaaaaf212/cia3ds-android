@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import io.github.cia3ds.seed.SeedFetcher
+import io.github.cia3ds.util.LogStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -68,12 +69,16 @@ class Cia3ds private constructor(private val appCtx: Context) {
             val rc = suspendCancellableCoroutine<Int> { cont ->
                 val t = Thread({
                     val pcb = NativeProgressCallback { pct, msg -> progressEmit(pct, msg) }
-                    val lcb = NativeLogCallback { line -> logEmit(line) }
+                    val lcb = NativeLogCallback { line ->
+                        LogStream.append(line)
+                        logEmit(line)
+                    }
                     val fetcher = SeedFetcher(appCtx)
                     val scb = NativeSeedFetcherCallback { tid ->
-                        // Native side calls us synchronously; we bridge to the
-                        // suspending fetcher with runBlocking on this engine thread.
-                        runBlocking { fetcher.fetch(tid) { line -> logEmit(line) } }
+                        runBlocking { fetcher.fetch(tid) { line ->
+                            LogStream.append(line)
+                            logEmit(line)
+                        } }
                     }
                     val code = nativeDecryptCia(
                         inPfd.fd,

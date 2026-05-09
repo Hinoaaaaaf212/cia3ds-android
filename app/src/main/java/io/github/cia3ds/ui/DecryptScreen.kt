@@ -63,6 +63,7 @@ import io.github.cia3ds.service.BatchItem
 import io.github.cia3ds.service.BatchSource
 import io.github.cia3ds.service.BatchState
 import io.github.cia3ds.service.DecryptionService
+import io.github.cia3ds.util.LogStream
 import io.github.cia3ds.util.SpaceCheckResult
 import io.github.cia3ds.util.checkFreeSpace
 import io.github.cia3ds.util.formatBytes
@@ -112,6 +113,28 @@ fun DecryptScreen() {
     val batchState = service?.state?.collectAsState()
 
     var pendingLowSpace by remember { mutableStateOf<PendingSpaceWarning?>(null) }
+
+    val saveLogLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                runCatching {
+                    val src = LogStream.file(ctx)
+                    if (src.exists()) {
+                        ctx.contentResolver.openOutputStream(uri, "wt")?.use { os ->
+                            src.inputStream().use { it.copyTo(os) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fun launchSaveLog() {
+        val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        saveLogLauncher.launch("cia3ds-log-$ts.txt")
+    }
 
     val isBatch = when (inputMode) {
         InputMode.Zip -> zipEntryCount > 1
@@ -192,21 +215,35 @@ fun DecryptScreen() {
         }
     }
 
-    fun launchSingleDecrypt(inUri: Uri, outUri: Uri, displayName: String, tempFile: File?) {
+    fun launchSingleDecrypt(
+        inUri: Uri,
+        outUri: Uri,
+        displayName: String,
+        tempFile: File?,
+        freshLog: Boolean = true,
+    ) {
         Log.i(TAG, "decrypt: input=$inUri output=$outUri format=$format")
         isRunning = true
         percent = 0
         status = ""
         lastResult = null
         metadata = DecryptMetadata()
-        logLines.clear()
-        logLines += "tap Decrypt: input=$displayName format=${format.extension}"
+        if (freshLog) {
+            logLines.clear()
+            LogStream.start(ctx)
+        }
+        val firstLine = "tap Decrypt: input=$displayName format=${format.extension}"
+        logLines += firstLine
+        LogStream.append(firstLine)
         pendingTempFile = tempFile
         runningJob = scope.launch {
             val engine = runCatching { Cia3ds.get(ctx) }
                 .onFailure { t ->
                     Log.e(TAG, "Cia3ds.get failed", t)
-                    logLines += "ERR: failed to load native engine: ${t.message}"
+                    val err = "ERR: failed to load native engine: ${t.message}"
+                    logLines += err
+                    LogStream.append(err)
+                    LogStream.stop()
                     isRunning = false
                     lastResult = DecryptResult.Failure(t.message ?: "load failed")
                     status = ctx.getString(R.string.error_generic, lastResult.toString())
@@ -243,11 +280,14 @@ fun DecryptScreen() {
                             }
                             pendingTempFile?.let { runCatching { it.delete() } }
                             pendingTempFile = null
+                            LogStream.stop()
                         }
                     }
                 }
             } catch (_: CancellationException) {
                 logLines += "Cancelled by user."
+                LogStream.append("Cancelled by user.")
+                LogStream.stop()
                 isRunning = false
                 runningJob = null
                 lastResult = DecryptResult.Failure(ctx.getString(R.string.single_cancelled))
@@ -256,7 +296,10 @@ fun DecryptScreen() {
                 pendingTempFile = null
             } catch (t: Throwable) {
                 Log.e(TAG, "decrypt flow threw", t)
-                logLines += "ERR: ${t.javaClass.simpleName}: ${t.message}"
+                val err = "ERR: ${t.javaClass.simpleName}: ${t.message}"
+                logLines += err
+                LogStream.append(err)
+                LogStream.stop()
                 isRunning = false
                 runningJob = null
                 lastResult = DecryptResult.Failure(t.message ?: t.javaClass.simpleName)
@@ -280,13 +323,19 @@ fun DecryptScreen() {
                 status = "Extracting from zip…"
                 percent = 0
                 logLines.clear()
-                logLines += "extracting $firstEntry…"
+                LogStream.start(ctx)
+                val extractMsg = "extracting $firstEntry…"
+                logLines += extractMsg
+                LogStream.append(extractMsg)
                 runningJob = scope.launch {
                     val pair = withContext(Dispatchers.IO) {
                         extractZipEntryToTemp(ctx, zipUri, firstEntry)
                     }
                     if (pair == null) {
-                        logLines += "ERR: could not extract entry from zip"
+                        val err = "ERR: could not extract entry from zip"
+                        logLines += err
+                        LogStream.append(err)
+                        LogStream.stop()
                         isRunning = false
                         runningJob = null
                         lastResult = DecryptResult.Failure("zip extract failed")
@@ -299,6 +348,7 @@ fun DecryptScreen() {
                         outUri,
                         "${pickedZipName ?: "zip"} / $displayName",
                         extracted,
+                        freshLog = false,
                     )
                 }
             }
@@ -627,6 +677,7 @@ fun DecryptScreen() {
                             )
                         )
                     },
+                    onSave = { launchSaveLog() },
                 )
             } else {
                 if (isRunning || lastResult != null) {
@@ -646,6 +697,7 @@ fun DecryptScreen() {
                             android.content.ClipData.newPlainText("cia3ds log", logLines.joinToString("\n"))
                         )
                     },
+                    onSave = { launchSaveLog() },
                 )
             }
         }
@@ -1034,5 +1086,5 @@ private fun zipEntrySize(ctx: Context, zipUri: Uri, entryName: String): Long {
     return size
 }
 
-private const val MAX_LOG_LINES = 2000
+private const val MAX_LOG_LINES = 50000
 private const val TAG = "cia3ds-ui"

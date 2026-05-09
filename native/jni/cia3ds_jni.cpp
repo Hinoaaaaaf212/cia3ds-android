@@ -412,6 +412,8 @@ struct NcchRegions {
     uint64_t exhdr_off, exhdr_size;
     uint64_t exefs_off, exefs_size;
     uint64_t romfs_off, romfs_size;
+    char hdr_hex_0[33];
+    char hdr_hex_100[33];
 };
 
 bool read_ncch_regions(const std::string &part_path, NcchRegions &out) {
@@ -444,6 +446,12 @@ bool read_ncch_regions(const std::string &part_path, NcchRegions &out) {
     out.exefs_size = (uint64_t)exefs_blk_size * 0x200ULL;
     out.romfs_off  = (uint64_t)romfs_blk_off * 0x200ULL;
     out.romfs_size = (uint64_t)romfs_blk_size * 0x200ULL;
+    for (int i = 0; i < 16; ++i) {
+        snprintf(&out.hdr_hex_0[i*2], 3, "%02x", hdr[i]);
+        snprintf(&out.hdr_hex_100[i*2], 3, "%02x", hdr[0x100 + i]);
+    }
+    out.hdr_hex_0[32] = '\0';
+    out.hdr_hex_100[32] = '\0';
     return true;
 }
 
@@ -455,7 +463,7 @@ bool list_extracted_partitions(const std::string &dir_path,
     // ctrtool --contents=<prefix> writes "<prefix>.NNNN.HHHHHHHH" files where
     // NNNN is the partition slot and HHHHHHHH is the lower 32 bits of the
     // content id (hex). We parse both because makerom's -i flag wants both.
-    std::regex re(R"(^c\.([0-9]{4})\.([0-9a-fA-F]{8})$)");
+    std::regex re(R"(^c\.([0-9a-fA-F]{4})\.([0-9a-fA-F]{8})$)");
     while ((e = readdir(d)) != nullptr) {
         std::string name = e->d_name;
         if (name == "." || name == "..") continue;
@@ -463,7 +471,7 @@ bool list_extracted_partitions(const std::string &dir_path,
         if (!std::regex_match(name, m, re)) continue;
         Partition p;
         p.path = dir_path + "/" + name;
-        p.slot = std::stoi(m[1].str(), nullptr, 10);
+        p.slot = std::stoi(m[1].str(), nullptr, 16);
         p.content_id = (uint32_t)std::stoul(m[2].str(), nullptr, 16);
         out.push_back(std::move(p));
     }
@@ -723,9 +731,11 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         }
         return 6;
     }
-    sink.emitf("extracted %zu partition(s)", partitions.size());
+    sink.emitf("extracted %zu partition(s) (TMD enabled count above)", partitions.size());
     for (auto &p : partitions) {
-        sink.emitf("  slot=%d id=0x%08x %s", p.slot, p.content_id, p.path.c_str());
+        struct stat pst;
+        long long psize = (stat(p.path.c_str(), &pst) == 0) ? (long long)pst.st_size : -1;
+        sink.emitf("  slot=%d id=0x%08x size=%lld %s", p.slot, p.content_id, psize, p.path.c_str());
     }
 
     auto emit_region_help = [&]() {
@@ -751,6 +761,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
                    (unsigned long long)reg.exhdr_off, (unsigned long long)reg.exhdr_size,
                    (unsigned long long)reg.exefs_off, (unsigned long long)reg.exefs_size,
                    (unsigned long long)reg.romfs_off, (unsigned long long)reg.romfs_size);
+        sink.emitf("  hdr[0..16]=%s hdr[0x100..0x110]=%s", reg.hdr_hex_0, reg.hdr_hex_100);
 
         std::string region_dir = work + "/regions_" + std::to_string(p.slot);
         if (!make_dir_p(region_dir)) {
