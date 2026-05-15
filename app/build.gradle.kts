@@ -13,8 +13,8 @@ android {
         applicationId = "io.github.cia3ds"
         minSdk = 24
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.2.3"
+        versionCode = 6
+        versionName = "0.2.4"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -35,7 +35,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("../native/CMakeLists.txt")
-            version = "3.22.1"
+            version = "4.1.2"
         }
     }
 

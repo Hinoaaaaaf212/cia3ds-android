@@ -1,0 +1,72 @@
+name: Compile CTRTool (on master branch)
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  release:
+    types: [ created ]
+
+jobs:
+  build_makefile:
+    name: Compile ${{ matrix.prog }} for ${{ matrix.dist }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        dist: [ubuntu_x86_64, macos_x86_64, macos_arm64]
+        prog: [ctrtool]
+        include:
+         - dist: ubuntu_x86_64
+           os: ubuntu-latest
+           arch: x86_64
+         - dist: macos_x86_64
+           os: macos-latest
+           arch: x86_64
+         - dist: macos_arm64
+           os: macos-latest
+           arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compile ${{ matrix.prog }}
+        working-directory: ${{ matrix.prog }}
+        run: make PROJECT_PLATFORM_ARCH=${{ matrix.arch }} deps all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.prog }}-${{ matrix.dist }}
+          path: ./${{ matrix.prog }}/bin/${{ matrix.prog }}
+          if-no-files-found: error
+  build_visualstudio:
+    name: Compile ${{ matrix.prog }} for ${{ matrix.dist }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        dist: [win_x64, win_x86]
+        prog: [ctrtool]
+        include:
+         - dist: win_x64
+           os: windows-latest
+           platform: x64
+           configuration: Release
+           build_path: x64\Release
+         - dist: win_x86
+           os: windows-latest
+           platform: x86
+           configuration: Release
+           build_path: Release
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@v1.3
+    - name: Compile ${{ matrix.prog }}
+      run: msbuild .\${{ matrix.prog }}\build\visualstudio\${{ matrix.prog }}.sln /p:configuration=${{ matrix.configuration }} /p:platform=${{ matrix.platform }} 
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.prog }}-${{ matrix.dist }}
+        path: .\${{ matrix.prog }}\build\visualstudio\${{ matrix.build_path }}\${{ matrix.prog }}.exe
+        if-no-files-found: error
+

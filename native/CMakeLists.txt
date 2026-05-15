@@ -29,9 +29,27 @@ add_compile_options(
     -Wno-tautological-constant-out-of-range-compare
 )
 
+add_compile_options(
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Release>:-fvisibility=hidden>
+    $<$<CONFIG:Release>:-fvisibility-inlines-hidden>
+    $<$<CONFIG:Release>:-ffunction-sections>
+    $<$<CONFIG:Release>:-fdata-sections>
+)
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    add_compile_options($<$<CONFIG:Release>:-march=armv8-a+crypto+aes>)
+elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
+    add_compile_options($<$<CONFIG:Release>:-mfpu=neon>)
+endif()
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+
 # Android bionic does not ship libiconv. Define a tiny shim that passes UTF-8 through
 # unchanged, which is sufficient for makerom's only use of iconv (filename conversion).
 add_compile_definitions(CIA3DS_BUILD=1)
+add_compile_definitions(CIA3DS_HW_AES=1)
+
+add_library(cia3ds_hw_aes_static STATIC ${CMAKE_CURRENT_SOURCE_DIR}/aes_armv8.c)
+target_include_directories(cia3ds_hw_aes_static PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(CTR_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Project_CTR)
 set(CTRTOOL_ROOT ${CTR_ROOT}/ctrtool)
@@ -46,6 +64,8 @@ set(MBEDTLS_ROOT ${CTRTOOL_ROOT}/deps/libmbedtls)
 file(GLOB MBEDTLS_SOURCES "${MBEDTLS_ROOT}/src/*.c")
 add_library(mbedtls_static STATIC ${MBEDTLS_SOURCES})
 target_include_directories(mbedtls_static PUBLIC ${MBEDTLS_ROOT}/include)
+target_include_directories(mbedtls_static PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mbedtls_static PUBLIC cia3ds_hw_aes_static)
 
 #-----------------------------------------------------------------------------
 # libfmt (header + 2 .cc).
@@ -135,6 +155,8 @@ add_library(makerom_mbedtls_static STATIC ${MAKEROM_MBEDTLS_SOURCES})
 target_include_directories(makerom_mbedtls_static PUBLIC
     ${MAKEROM_MBEDTLS_ROOT}/include
 )
+target_include_directories(makerom_mbedtls_static PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(makerom_mbedtls_static PUBLIC cia3ds_hw_aes_static)
 
 set(BLZ_ROOT ${MAKEROM_ROOT}/deps/libblz)
 file(GLOB BLZ_SOURCES "${BLZ_ROOT}/src/*.c")
@@ -183,6 +205,7 @@ target_compile_definitions(makerom_static PRIVATE
 #-----------------------------------------------------------------------------
 add_library(cia3ds SHARED
     jni/cia3ds_jni.cpp
+    jni/metadata_sniff.cpp
     patch/ncch_flags.c
     patch/iconv_shim.c
 )
@@ -194,6 +217,7 @@ target_include_directories(cia3ds PRIVATE
 target_link_libraries(cia3ds PRIVATE
     ctrtool_static
     makerom_static
+    cia3ds_hw_aes_static
     log
     android
 )

@@ -69,7 +69,6 @@ jobs:
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;28.2.13676358" "cmake;3.22.1"
 
       - name: Decode keystore
-        if: env.SIGNING_KEYSTORE != ''
         env:
           SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
         run: echo "$SIGNING_KEYSTORE" | base64 -d > $GITHUB_WORKSPACE/release.keystore

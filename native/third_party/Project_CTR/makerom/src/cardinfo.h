@@ -1,0 +1,47 @@
+#pragma once
+
+typedef struct
+{
+	u8 reserved0[0xf8];
+	u8 mediaSizeUsed[8];
+	u8 reserved1[0x8];
+	u8 unknown[0x4];
+	u8 reserved2[0xc];
+	u8 cverTitleId[8];
+	u8 cverTitleVersion[2];
+	u8 reserved3[0xcd6];
+} cardinfo_notes; // reserved[0xDF8];
+
+typedef struct
+{
+	u8 writableAddress[4];
+	u8 cardInfoBitmask[4];
+	cardinfo_notes notes;
+	u8 cardSeedKeyY[0x10];
+	u8 encCardSeed[0x10];
+	u8 cardSeedMac[0x10];
+	u8 cardSeedNonce[0xc];
+	u8 reserved1[0xc4];
+	u8 ncch0Hdr[0x100];
+} cardinfo_hdr;
+
+typedef struct
+{
+	u8 cardDeviceReserved1[0x200];
+	u8 titleKey[0x10];
+	u8 cardDeviceReserved2[0xf0];
+} devcardinfo_hdr;
+
+static const u8 stock_card_seed_mac[0x30] = 
+{
+	0xAD, 0x88, 0xAC, 0x41, 0xA2, 0xB1, 0x5E, 0x8F, 0x66, 0x9C, 0x97, 0xE5, 0xE1, 0x5E, 0xA3, 0xEB
+};
+
+static const u8 stock_title_key[0x10] = 
+{
+	0x6E, 0xC7, 0x5F, 0xB2, 0xE2, 0xB4, 
+	0x87, 0x46, 0x1E, 0xDD, 0xCB, 0xB8, 
+	0x97, 0x11, 0x92, 0xBA
+};
+
+int GenCardInfoHdr(cci_settings *set);

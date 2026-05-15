@@ -3,8 +3,12 @@
 [<img src="https://img.shields.io/badge/Obtainium-Add%20to%20Obtainium-blueviolet?style=for-the-badge&logo=android" alt="Add to Obtainium" height="32">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Hinoaaaaaf212/cia3ds-android)
 [<img src="https://img.shields.io/github/v/release/Hinoaaaaaf212/cia3ds-android?style=for-the-badge&label=Latest%20APK" alt="Latest release" height="32">](https://github.com/Hinoaaaaaf212/cia3ds-android/releases/latest)
 
-On-device decryption of Nintendo 3DS `.cia` and `.3ds` files. Android port of
-the Windows-only [Batch CIA 3DS Decryptor Redux][upstream].
+On-device decryption of Nintendo 3DS `.cia` and `.3ds` files. Inspired by the
+Windows-only [Batch CIA 3DS Decryptor Redux][inspiration], but a separate
+implementation: cia3ds-android wraps the same upstream `ctrtool` and `makerom`
+([3DSGuy/Project_CTR][ctr]) in a native Android library, with its own Kotlin
+UI and an open-source replacement for the closed `decrypt.exe` the Windows
+tool depended on.
 
 Targets phones, tablets, Android TV, and ARM-handheld devices like the
 Retroid Pocket and Odin. Output is a fully-decrypted `.cia` (or `.cci` for
@@ -31,7 +35,7 @@ Requirements:
 - JDK 17
 
 ```sh
-git clone --recurse-submodules https://github.com/YOU/cia3ds-android.git
+git clone --recurse-submodules https://github.com/Hinoaaaaaf212/cia3ds-android.git
 cd cia3ds-android
 ./gradlew :app:assembleDebug
 ```
@@ -106,8 +110,8 @@ gamepad with a directional pad to operate them comfortably.
                   assets/seeddb.bin
 ```
 
-`ncch_flags.c` is the open-source replacement for the closed-source
-`decrypt.exe` that the original Windows tool shipped. It does one thing:
+`ncch_flags.c` is an open-source replacement for the closed-source
+`decrypt.exe` that the Windows Batch CIA 3DS Decryptor Redux depends on. It does one thing:
 flips the `OtherFlag.NoEncryption` bit in each extracted NCCH partition
 header, so emulators install the result without ever consulting an AES key.
 See the file's header comment for the exact byte offsets, sourced from
@@ -118,6 +122,7 @@ See the file's header comment for the exact byte offsets, sourced from
 
 MIT, see [LICENSE](LICENSE). Third-party attributions in [NOTICE](NOTICE).
 
-[upstream]: https://github.com/xxmichibxx/Batch-CIA-3DS-Decryptor-Redux
+[inspiration]: https://github.com/xxmichibxx/Batch-CIA-3DS-Decryptor-Redux
+[ctr]: https://github.com/3DSGuy/Project_CTR
 [azahar]: https://github.com/azahar-emu/azahar
 [n3ds-header]: native/third_party/Project_CTR/ctrtool/deps/libnintendo-n3ds/include/ntd/n3ds/ncch.h

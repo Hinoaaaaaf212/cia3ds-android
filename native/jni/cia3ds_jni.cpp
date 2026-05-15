@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cinttypes>
@@ -17,13 +18,17 @@
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
 extern "C" {
 #include "ncch_flags.h"
+#include "aes_armv8.h"
 int makerom_main(int argc, char *argv[]);
 }
+
+#include "metadata_sniff.h"
 
 int ctrtool_main(int argc, char *argv[], char *envp[]);
 
@@ -221,6 +226,43 @@ bool copy_fd_to_path(int fd, const std::string &path) {
     }
     close(out);
     return n == 0;
+}
+
+std::string try_fd_path(int inFd, int &out_dup_fd) {
+    out_dup_fd = -1;
+    if (inFd < 0) return "";
+    struct stat st;
+    if (fstat(inFd, &st) != 0) return "";
+    if (!S_ISREG(st.st_mode)) return "";
+    if (lseek(inFd, 0, SEEK_CUR) == (off_t)-1) return "";
+    if (lseek(inFd, 0, SEEK_SET) == (off_t)-1) return "";
+    int dup_fd = dup(inFd);
+    if (dup_fd < 0) return "";
+    posix_fadvise(dup_fd, 0, 0, POSIX_FADV_RANDOM);
+    out_dup_fd = dup_fd;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "/proc/self/fd/%d", dup_fd);
+    return buf;
+}
+
+bool copy_fd_to_fd(int in_fd, int out_fd) {
+    if (in_fd < 0 || out_fd < 0) return false;
+    lseek(in_fd, 0, SEEK_SET);
+    constexpr size_t kBuf = 256 * 1024;
+    std::unique_ptr<char[]> buf(new char[kBuf]);
+    ssize_t n;
+    bool ok = true;
+    while ((n = read(in_fd, buf.get(), kBuf)) > 0) {
+        ssize_t w = 0;
+        while (w < n) {
+            ssize_t k = write(out_fd, buf.get() + w, (size_t)(n - w));
+            if (k <= 0) { ok = false; break; }
+            w += k;
+        }
+        if (!ok) break;
+    }
+    if (n < 0) ok = false;
+    return ok;
 }
 
 bool copy_path_to_fd(const std::string &path, int fd) {
@@ -542,6 +584,8 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
 
     sink.emitf("== cia3ds: decrypt %s (wantCci=%d) ==",
                orig_name.c_str(), (int)wantCci);
+    sink.emitf("aes-backend: %s",
+               cia3ds_aes_arm_available() ? "ARMv8 crypto" : "software");
 
     g_cancel.store(false, std::memory_order_relaxed);
 
@@ -588,46 +632,103 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         return 1;
     }
 
-    progress.post(2, "Staging input");
-    if (!copy_fd_to_path(inFd, input_path)) {
-        sink.emitf("ERR: failed to stage input fd to %s", input_path.c_str());
-        sink.emit("Most common reasons:");
-        sink.emit("  - The device ran out of free storage while copying.");
-        sink.emit("  - The source file is on a removable drive that was disconnected.");
-        sink.emit("  - The source file is no longer reachable through the file picker.");
-        sink.emit("Free up space and re-pick the input file.");
-        return 2;
+    progress.post(2, "Reading metadata");
+    SniffedMetadata sniffed;
+    bool sniffed_ok = sniff_metadata_from_fd(inFd, sniffed);
+
+    CiaInfo info;
+    if (sniffed_ok) {
+        info.title_id = sniffed.title_id;
+        info.title_version = sniffed.title_version;
+        info.already_decrypted = sniffed.already_decrypted;
+        info.is_3ds = sniffed.is_3ds;
+        info.kind = classify_kind(info.title_id);
+        info.info_rc = 0;
+        sink.emitf("metadata (sniff): title=%s version=%s kind=%d already=%d is_3ds=%d",
+                   info.title_id.c_str(), info.title_version.c_str(),
+                   (int)info.kind, (int)info.already_decrypted, (int)info.is_3ds);
+        sink.emitf("META: title_id=%s", info.title_id.c_str());
+        sink.emitf("META: kind=%s", kind_to_suffix(info.kind));
+        sink.emitf("META: version=%s",
+                   info.title_version.empty() ? "0" : info.title_version.c_str());
     }
+
+    if (info.already_decrypted) {
+        progress.post(100, "Already decrypted; nothing to do.");
+        sink.emit("input is already decrypted; copying input to output");
+        if (!copy_fd_to_fd(inFd, outFd)) {
+            sink.emit("ERR: copy of input to output fd failed.");
+            sink.emit("The file is already decrypted and the engine tried to copy it to");
+            sink.emit("the output you picked, but the write failed.");
+            sink.emit("Most common reasons:");
+            sink.emit("  - The destination ran out of free storage.");
+            sink.emit("  - The destination folder is no longer writable.");
+            sink.emit("Free up space and pick the output again.");
+            return 4;
+        }
+        rmtree(work);
+        return 10;
+    }
+
+    struct FdGuard {
+        int fd = -1;
+        ~FdGuard() { if (fd >= 0) ::close(fd); }
+    } fd_guard;
+
+    std::string input_path_for_tools;
     {
-        struct stat st;
-        if (stat(input_path.c_str(), &st) == 0) {
-            sink.emitf("staged input: %lld bytes",
-                       (long long)st.st_size);
+        int dup_fd = -1;
+        std::string p = try_fd_path(inFd, dup_fd);
+        if (!p.empty()) {
+            fd_guard.fd = dup_fd;
+            input_path_for_tools = p;
+            sink.emitf("staging: passing source fd directly via %s (no copy)",
+                       p.c_str());
+        } else {
+            progress.post(5, "Staging input");
+            if (!copy_fd_to_path(inFd, input_path)) {
+                sink.emitf("ERR: failed to stage input fd to %s",
+                           input_path.c_str());
+                sink.emit("Most common reasons:");
+                sink.emit("  - The device ran out of free storage while copying.");
+                sink.emit("  - The source file is on a removable drive that was disconnected.");
+                sink.emit("  - The source file is no longer reachable through the file picker.");
+                sink.emit("Free up space and re-pick the input file.");
+                return 2;
+            }
+            input_path_for_tools = input_path;
+            struct stat st;
+            if (stat(input_path.c_str(), &st) == 0) {
+                sink.emitf("staged input: %lld bytes",
+                           (long long)st.st_size);
+            }
         }
     }
 
     if (bail_if_cancelled()) return 13;
-    progress.post(10, "Reading metadata");
-    CiaInfo info = run_ctrtool_info(input_path, seeddb_path, log_path, sink);
-    sink.emitf("metadata: title=%s version=%s kind=%d already=%d is_3ds=%d",
-               info.title_id.empty() ? "(unknown)" : info.title_id.c_str(),
-               info.title_version.c_str(),
-               (int)info.kind, (int)info.already_decrypted, (int)info.is_3ds);
-    sink.emitf("META: title_id=%s",
-               info.title_id.empty() ? "" : info.title_id.c_str());
-    sink.emitf("META: kind=%s", kind_to_suffix(info.kind));
-    sink.emitf("META: version=%s",
-               info.title_version.empty() ? "0" : info.title_version.c_str());
+    if (!sniffed_ok) {
+        progress.post(10, "Reading metadata (fallback)");
+        info = run_ctrtool_info(input_path_for_tools, seeddb_path, log_path, sink);
+        sink.emitf("metadata: title=%s version=%s kind=%d already=%d is_3ds=%d",
+                   info.title_id.empty() ? "(unknown)" : info.title_id.c_str(),
+                   info.title_version.c_str(),
+                   (int)info.kind, (int)info.already_decrypted, (int)info.is_3ds);
+        sink.emitf("META: title_id=%s",
+                   info.title_id.empty() ? "" : info.title_id.c_str());
+        sink.emitf("META: kind=%s", kind_to_suffix(info.kind));
+        sink.emitf("META: version=%s",
+                   info.title_version.empty() ? "0" : info.title_version.c_str());
 
-    if (info.info_rc != 0 && info.title_id.empty()) {
-        sink.emit("ERR: ctrtool could not identify this file as a CIA or 3DS.");
-        sink.emit("Most common reasons:");
-        sink.emit("  - The file is already decrypted (re-running an output is a no-op).");
-        sink.emit("  - The file is not a Nintendo 3DS CIA/3DS at all.");
-        sink.emit("  - The file is corrupt or truncated.");
-        sink.emit("Pick a still-encrypted .cia or .3ds and try again.");
-        rmtree(work);
-        return 12;
+        if (info.info_rc != 0 && info.title_id.empty()) {
+            sink.emit("ERR: ctrtool could not identify this file as a CIA or 3DS.");
+            sink.emit("Most common reasons:");
+            sink.emit("  - The file is already decrypted (re-running an output is a no-op).");
+            sink.emit("  - The file is not a Nintendo 3DS CIA/3DS at all.");
+            sink.emit("  - The file is corrupt or truncated.");
+            sink.emit("Pick a still-encrypted .cia or .3ds and try again.");
+            rmtree(work);
+            return 12;
+        }
     }
 
     std::string cdn_seed_hex;
@@ -649,7 +750,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     if (info.already_decrypted) {
         progress.post(100, "Already decrypted; nothing to do.");
         sink.emit("input is already decrypted; copying input to output");
-        if (!copy_path_to_fd(input_path, outFd)) {
+        if (!copy_path_to_fd(input_path_for_tools, outFd)) {
             sink.emit("ERR: copy of input to output fd failed.");
             sink.emit("The file is already decrypted and the engine tried to copy it to");
             sink.emit("the output you picked, but the write failed.");
@@ -669,7 +770,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         std::string contents_prefix = contents_dir + "/c";
         sink.emitf("$ ctrtool --seeddb=%s --contents=%s %s",
                    seeddb_path.c_str(), contents_prefix.c_str(),
-                   input_path.c_str());
+                   input_path_for_tools.c_str());
         StdoutCapture cap(log_path);
         Argv argv({
             "ctrtool",
@@ -677,7 +778,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             "--contents=" + contents_prefix,
         });
         if (!cdn_seed_hex.empty()) argv.push("--seed=" + cdn_seed_hex);
-        argv.push(input_path);
+        argv.push(input_path_for_tools);
         char *empty_envp[] = {nullptr};
     int rc = ctrtool_main(argv.size(), argv.data(), empty_envp);
         std::string out = cap.read();
@@ -775,7 +876,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
 
         sink.emitf("$ ctrtool -n %d --exheader=%s --exefs=%s --romfs=%s --seeddb=%s %s",
                    p.slot, eh_path.c_str(), ef_path.c_str(), rf_path.c_str(),
-                   seeddb_path.c_str(), input_path.c_str());
+                   seeddb_path.c_str(), input_path_for_tools.c_str());
         StdoutCapture cap(log_path);
         Argv argv({
             "ctrtool",
@@ -786,7 +887,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             "--seeddb=" + seeddb_path,
         });
         if (!cdn_seed_hex.empty()) argv.push("--seed=" + cdn_seed_hex);
-        argv.push(input_path);
+        argv.push(input_path_for_tools);
         char *empty_envp2[] = {nullptr};
         int rc = ctrtool_main(argv.size(), argv.data(), empty_envp2);
         std::string out = cap.read();
@@ -798,6 +899,13 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             return 9;
         }
 
+        struct SpliceJob {
+            bool needed = false;
+            uint64_t dst_offset = 0;
+            std::string src_path;
+            const char *region_name = "";
+        };
+        std::array<SpliceJob, 3> jobs;
         struct stat st;
         if (reg.exhdr_size > 0) {
             if (stat(eh_path.c_str(), &st) != 0) {
@@ -808,11 +916,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             }
             sink.emitf("  splicing exheader (%lld bytes) -> 0x%llx",
                        (long long)st.st_size, (unsigned long long)reg.exhdr_off);
-            if (!splice_region(p.path, reg.exhdr_off, eh_path)) {
-                sink.emit("ERR: failed to splice exheader back into the partition.");
-                emit_region_help();
-                return 9;
-            }
+            jobs[0] = { true, reg.exhdr_off, eh_path, "exheader" };
         }
         if (reg.exefs_size > 0) {
             if (stat(ef_path.c_str(), &st) != 0) {
@@ -823,11 +927,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             }
             sink.emitf("  splicing exefs (%lld bytes) -> 0x%llx",
                        (long long)st.st_size, (unsigned long long)reg.exefs_off);
-            if (!splice_region(p.path, reg.exefs_off, ef_path)) {
-                sink.emit("ERR: failed to splice exefs back into the partition.");
-                emit_region_help();
-                return 9;
-            }
+            jobs[1] = { true, reg.exefs_off, ef_path, "exefs" };
         }
         if (reg.romfs_size > 0) {
             if (stat(rf_path.c_str(), &st) != 0) {
@@ -838,8 +938,22 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             }
             sink.emitf("  splicing romfs (%lld bytes) -> 0x%llx",
                        (long long)st.st_size, (unsigned long long)reg.romfs_off);
-            if (!splice_region(p.path, reg.romfs_off, rf_path)) {
-                sink.emit("ERR: failed to splice romfs back into the partition.");
+            jobs[2] = { true, reg.romfs_off, rf_path, "romfs" };
+        }
+
+        std::array<std::thread, 3> threads;
+        std::array<bool, 3> results{ true, true, true };
+        for (int i = 0; i < 3; ++i) {
+            if (!jobs[i].needed) continue;
+            threads[i] = std::thread([&, i]() {
+                results[i] = splice_region(p.path, jobs[i].dst_offset, jobs[i].src_path);
+            });
+        }
+        for (auto &t : threads) if (t.joinable()) t.join();
+
+        for (int i = 0; i < 3; ++i) {
+            if (jobs[i].needed && !results[i]) {
+                sink.emitf("ERR: failed to splice %s back into the partition.", jobs[i].region_name);
                 emit_region_help();
                 return 9;
             }

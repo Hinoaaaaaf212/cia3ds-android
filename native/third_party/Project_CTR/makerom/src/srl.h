@@ -1,0 +1,93 @@
+#pragma once
+
+typedef struct
+{
+	u8 gameTitle[0xC];
+	u8 gameCode[4];
+	u8 makerCode[2];
+	u8 unitCode;
+	u8 encryptionSeedSelect;
+	u8 deviceCapacity;
+	u8 reserved0[9];
+	u8 romVersion;
+	u8 internalFlag;
+	u8 arm9RomOffset[4];
+	u8 arm9EntryAddress[4];
+	u8 arm9RamAddress[4];
+	u8 arm9Size[4];
+	u8 arm7RomOffset[4];
+	u8 arm7EntryAddress[4];
+	u8 arm7RamAddress[4];
+	u8 arm7Size[4];
+	u8 fntOffset[4];
+	u8 fntSize[4];
+	u8 fatOffset[4];
+	u8 fatSize[4];
+	u8 arm9OverlayOffset[4];
+	u8 arm9OverlaySize[4];
+	u8 arm7OverlayOffset[4];
+	u8 arm7OverlaySize[4];
+	u8 normalCardControlRegSettings[4];
+	u8 secureCardControlRegSettings[4];
+	u8 icon_bannerOffset[4];
+	u8 secureAreaCrc[2];
+	u8 secure_transfer_timeout[2];
+	u8 arm9Autoload[4];
+	u8 arm7Autoload[4];
+	u8 secureDisable[8];
+	u8 ntrRomSize[4];
+	u8 headerSize[4];
+	u8 reserved1[0x38];
+	u8 nintendoLogo[0x9C];
+	u8 nintendoLogoCrc[2];
+	u8 headerCrc[2];
+	u8 debugReserved[0x20];
+	
+	//TWL Only Data
+	u8 configSettings[0x34];
+	u8 accessControl[4];
+	u8 arm7ScfgExtMask[4];
+	u8 reserved_flags[4];
+	u8 arm9iRomOffset[4];
+	u8 reserved2[4];
+	u8 arm9iLoadAddress[4];
+	u8 arm9iSize[4];
+	u8 arm7iRomOffset[4];
+	u8 struct_param_baseAddress[4];
+	u8 arm7iLoadAddress[4];
+	u8 arm7iSize[4];
+	u8 digest_ntrRegionOffset[4];
+	u8 digest_ntrRegionSize[4];
+	u8 digest_twlRegionOffset[4];
+	u8 digest_twlRegionSize[4];
+	u8 digestSectorHashtableOffset[4];
+	u8 digestSectorHashtableSize[4];
+	u8 digest_blockHashtableOffset[4];
+	u8 digest_blockHashtableSize[4];
+	u8 digestSectorSize[4];
+	u8 digest_blockSectorcount[4];
+	u8 reserved3[8];
+	u8 twlRomSize[8];
+	u8 unknown[8];
+	u8 modcryptArea1Offset[4];
+	u8 modcryptArea1Size[4];
+	u8 modcryptArea2Offset[4];
+	u8 modcryptArea2Size[4];
+	u8 title_id[8];
+	u8 pubSaveDataSize[4];
+	u8 privSaveDataSize[4];
+	u8 reserved4[0xC0];
+	
+	// TWL and Signed NTR
+	u8 arm9WithSecAreaSha1Hmac[0x14];
+	u8 arm7Sha1Hmac[0x14];
+	u8 digestMasterSha1Hmac[0x14];
+	u8 bannerSha1Hmac[0x14];
+	u8 arm9iSha1Hmac[0x14];
+	u8 arm7iSha1Hmac[0x14];
+	u8 reserved5[0x28];
+	u8 arm9Sha1Hmac[0x14];
+	u8 reserved6[0xA4C];
+	u8 reserved7[0x180];
+	u8 signature[0x80];
+} srl_hdr;
