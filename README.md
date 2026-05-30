@@ -2,6 +2,7 @@
 
 [<img src="https://img.shields.io/badge/Obtainium-Add%20to%20Obtainium-blueviolet?style=for-the-badge&logo=android" alt="Add to Obtainium" height="32">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Hinoaaaaaf212/cia3ds-android)
 [<img src="https://img.shields.io/github/v/release/Hinoaaaaaf212/cia3ds-android?style=for-the-badge&label=Latest%20APK" alt="Latest release" height="32">](https://github.com/Hinoaaaaaf212/cia3ds-android/releases/latest)
+[<img src="https://img.shields.io/github/downloads/Hinoaaaaaf212/cia3ds-android/total?style=for-the-badge&label=Downloads" alt="Total downloads" height="32">](https://github.com/Hinoaaaaaf212/cia3ds-android/releases)
 
 On-device decryption of Nintendo 3DS `.cia` and `.3ds` files. Inspired by the
 Windows-only [Batch CIA 3DS Decryptor Redux][inspiration], but a separate
@@ -87,39 +88,9 @@ of Downloads instead of `Downloads` itself.
 
 ### Android TV / handhelds
 
-The app declares `android.intent.category.LEANBACK_LAUNCHER` and ships a TV
-banner, so it shows up on the Android TV home screen. D-pad navigation
-works through the stock Compose Material focus model. SAF pickers are the
-same as on phones, so most TV remotes will need a connected USB/BT mouse or
-gamepad with a directional pad to operate them comfortably.
-
-## Architecture
-
-```
-+--------------------------------------------------------+
-| Kotlin (Jetpack Compose, Material 3)                   |
-|   • SAF pickers, batch service, TV-friendly UI         |
-+--------------------------+-----------------------------+
-                           | JNI
-+--------------------------v-----------------------------+
-| libcia3ds.so   (one shared lib, 3 ABIs)                |
-|   • ctrtool: NCCH/CIA decryption (MIT)                 |
-|   • makerom: CIA/CCI rebuild (MIT)                     |
-|   • mbedTLS: AES-CTR / SHA / RSA (Apache-2.0)          |
-|   • libfmt, libyaml, libblz, libtoolchain, n3ds-libs   |
-|   • ncch_flags.c: replaces closed-source decrypt.exe   |
-+--------------------------------------------------------+
-                           |
-                  assets/seeddb.bin
-```
-
-`ncch_flags.c` is an open-source replacement for the closed-source
-`decrypt.exe` that the Windows Batch CIA 3DS Decryptor Redux depends on. It does one thing:
-flips the `OtherFlag.NoEncryption` bit in each extracted NCCH partition
-header, so emulators install the result without ever consulting an AES key.
-See the file's header comment for the exact byte offsets, sourced from
-[`ntd::n3ds::NcchCommonHeader`][n3ds-header] in the upstream
-`libnintendo-n3ds` headers.
+Shows up on the Android TV home screen and works with a D-pad. The file
+pickers are the standard Android ones, so a connected mouse or gamepad makes
+them easier to navigate with a TV remote.
 
 ## License
 
@@ -128,4 +99,3 @@ MIT, see [LICENSE](LICENSE). Third-party attributions in [NOTICE](NOTICE).
 [inspiration]: https://github.com/xxmichibxx/Batch-CIA-3DS-Decryptor-Redux
 [ctr]: https://github.com/3DSGuy/Project_CTR
 [azahar]: https://github.com/azahar-emu/azahar
-[n3ds-header]: native/third_party/Project_CTR/ctrtool/deps/libnintendo-n3ds/include/ntd/n3ds/ncch.h
