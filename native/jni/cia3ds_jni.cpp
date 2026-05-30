@@ -118,9 +118,6 @@ struct LogSink {
     }
 
     void emitBlock(const std::string &text) const {
-        // PushLocalFrame because emit() creates a jstring per line and
-        // ctrtool/makerom output can be tens of thousands of lines, blowing
-        // the 512-entry local-ref table.
         if (env) env->PushLocalFrame(16);
         size_t start = 0;
         size_t emitted = 0;
@@ -242,8 +239,6 @@ std::string try_fd_path(int inFd, int &out_dup_fd) {
     posix_fadvise(dup_fd, 0, 0, POSIX_FADV_RANDOM);
     char buf[64];
     snprintf(buf, sizeof(buf), "/proc/self/fd/%d", dup_fd);
-    // Seekable does not imply the procfs path is re-openable; some SAF fds give
-    // EACCES when reopened by path. Probe, else fall back to staging.
     int probe = open(buf, O_RDONLY);
     if (probe < 0) {
         close(dup_fd);
@@ -355,13 +350,6 @@ struct CiaInfo {
 };
 
 CiaKind classify_kind(const std::string &title_id_hex) {
-    // Title-id high-32 nibbles, as used by the original .bat:
-    //   00040000  -> Game (eShop / cartridge)
-    //   00040002  -> Demo
-    //   00040010  -> System app
-    //   0004000e  -> Patch / update
-    //   0004008c  -> DLC
-    //   00048005, 0004800f, 00048004 -> TWL (DSiWare)
     if (title_id_hex.size() < 8) return CiaKind::Unknown;
     std::string hi = title_id_hex.substr(0, 8);
     for (auto &c : hi) c = (char)tolower(c);
@@ -439,8 +427,6 @@ uint32_t rd_u32_le_at(const uint8_t *p) {
          | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-// Copy [start, start+len) of an open fd to a new file. pread-based so it does
-// not disturb the fd's own offset (the same fd may be sliced repeatedly).
 bool copy_file_range_to_path(int fd, uint64_t start, uint64_t len,
                              const std::string &path) {
     int out = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -469,22 +455,15 @@ bool copy_file_range_to_path(int fd, uint64_t start, uint64_t len,
     return ok && done == len;
 }
 
-// Carve NCSD/.3ds partitions to standalone NCCH files named like ctrtool's CIA
-// output (c.NNNN.HHHHHHHH) so the rest of the pipeline treats them identically.
-// ctrtool's CciProcess cannot do this for ENCRYPTED carts (its CciFsSnapshotGenerator
-// throws on any non-zero partition crypto type), which is why we slice the header
-// ourselves. slot and content_id are both the partition index, matching makerom's
-// NCSD->CIA content-index convention. Returns false on a malformed header or if no
-// partitions were carved.
 bool carve_ncsd_partitions(const std::string &input_path,
                            const std::string &contents_dir,
                            std::vector<Partition> &out) {
     int fd = open(input_path.c_str(), O_RDONLY);
     if (fd < 0) return false;
     uint8_t hdr[0x100];
-    bool hdr_ok = pread_full_at(fd, hdr, sizeof(hdr), 0x100); // NcsdCommonHeader
+    bool hdr_ok = pread_full_at(fd, hdr, sizeof(hdr), 0x100);
     if (!hdr_ok || memcmp(hdr, "NCSD", 4) != 0) { close(fd); return false; }
-    uint32_t block_size = (uint32_t)0x200u << hdr[0x8E];      // flags.block_size_log
+    uint32_t block_size = (uint32_t)0x200u << hdr[0x8E];
     bool any = false;
     bool failed = false;
     for (int i = 0; i < 8; ++i) {
@@ -537,13 +516,6 @@ bool splice_region(const std::string &part_path,
     return ok;
 }
 
-// NCCH header layout (offsets within the partition file):
-//   0x00  RSA-2048 signature                       (256 bytes)
-//   0x100 NcchCommonHeader                         (256 bytes)
-//     0x180 exhdr_size (u32, little-endian)
-//   ExHeader region:    file offset 0x200, size = exhdr_size + 0x400 (acex)
-//   ExeFs region:       file offset = exefs_blk_offset * 0x200, size = exefs_blk_size * 0x200
-//   RomFs region:       file offset = romfs_blk_offset * 0x200, size = romfs_blk_size * 0x200
 struct NcchRegions {
     uint64_t exhdr_off, exhdr_size;
     uint64_t exefs_off, exefs_size;
@@ -570,12 +542,6 @@ bool read_ncch_regions(const std::string &part_path, NcchRegions &out) {
     uint32_t exefs_blk_size   = rd_u32(0x1A4);
     uint32_t romfs_blk_off    = rd_u32(0x1B0);
     uint32_t romfs_blk_size   = rd_u32(0x1B4);
-    // The NCCH header includes the exheader and access_descriptor immediately
-    // after the common header. Their combined region (what ctrtool emits as
-    // --exheader) is exhdr_size + 0x400 bytes starting at file offset 0x200.
-    // BUT ctrtool's --exheader writes only the exhdr_size portion. The
-    // access_descriptor follows it; we leave it in place because it's not
-    // encrypted.
     out.exhdr_off  = 0x200;
     out.exhdr_size = exhdr_size_field;
     out.exefs_off  = (uint64_t)exefs_blk_off * 0x200ULL;
@@ -596,9 +562,6 @@ bool list_extracted_partitions(const std::string &dir_path,
     DIR *d = opendir(dir_path.c_str());
     if (!d) return false;
     struct dirent *e;
-    // ctrtool --contents=<prefix> writes "<prefix>.NNNN.HHHHHHHH" files where
-    // NNNN is the partition slot and HHHHHHHH is the lower 32 bits of the
-    // content id (hex). We parse both because makerom's -i flag wants both.
     std::regex re(R"(^c\.([0-9a-fA-F]{4})\.([0-9a-fA-F]{8})$)");
     while ((e = readdir(d)) != nullptr) {
         std::string name = e->d_name;
@@ -680,9 +643,6 @@ std::string smdh_best_title(const uint8_t *smdh) {
     return "";
 }
 
-// 3DS icons are 8x8 tiles in raster order; pixels within a tile follow a
-// Morton/Z-order curve. Decodes the 48x48 large icon (tiled RGB565) to
-// row-major RGBA8888; out must hold kIconDim*kIconDim*4 bytes.
 void smdh_decode_large_icon(const uint8_t *icon, uint8_t *out) {
     constexpr int tile = 8;
     constexpr int tiles_per_row = kIconDim / tile;
@@ -974,16 +934,13 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             return 4;
         }
         rmtree(work);
-        return 10; // rc=10: already-decrypted sentinel
+        return 10;
     }
 
     if (bail_if_cancelled()) return 13;
     progress.post(20, "Extracting partitions");
     std::vector<Partition> partitions;
     if (info.is_3ds) {
-        // ctrtool cannot extract encrypted NCSD partitions (its CciProcess throws),
-        // so carve them ourselves into the same c.NNNN.HHHHHHHH layout the CIA path
-        // produces. The per-region decrypt below then runs on each carved NCCH.
         sink.emit("input is NCSD/.3ds; carving partitions directly");
         if (!carve_ncsd_partitions(input_path_for_tools, contents_dir, partitions)) {
             sink.emit("ERR: could not carve NCCH partitions from this .3ds/NCSD file.");
@@ -1100,9 +1057,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         std::string ef_path = region_dir + "/exefs.bin";
         std::string rf_path = region_dir + "/romfs.bin";
 
-        // For NCSD the per-partition file is a standalone NCCH; ctrtool detects it
-        // as an NCCH and decrypts the regions without -n. For CIA we select the
-        // content out of the original package by index with -n.
         const std::string &region_input = info.is_3ds ? p.path : input_path_for_tools;
         std::string n_flag = info.is_3ds ? "" : ("-n " + std::to_string(p.slot) + " ");
         sink.emitf("$ ctrtool %s--exheader=%s --exefs=%s --romfs=%s --seeddb=%s %s",
@@ -1304,8 +1258,6 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     return 0;
 }
 
-// Pre-decrypt preview: decrypts only the first partition's ExeFS (never the
-// romfs) to read the SMDH name + icon. Returns a Cia3ds$PreviewResult or null.
 extern "C" JNIEXPORT jobject JNICALL
 Java_io_github_cia3ds_jni_Cia3ds_nativePreview(
     JNIEnv *env, jobject /*thiz*/,

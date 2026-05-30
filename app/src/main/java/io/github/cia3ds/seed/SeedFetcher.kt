@@ -149,10 +149,6 @@ class SeedFetcher(private val appCtx: Context) {
         private const val CDN_HOST = "kagiya-ctr.cdn.nintendo.net"
         @Volatile private var cachedFactory: SSLSocketFactory? = null
 
-        // The CDN's 2012 cert carries its name only in the CN (*.cdn.nintendo.net)
-        // with an empty SAN list, which modern verifiers reject. The cert itself is
-        // pinned by cdnSocketFactory(), so accepting the CN wildcard for this exact
-        // host adds no risk: only that one cert can complete the handshake.
         private val cdnHostnameVerifier = HostnameVerifier { hostname, session: SSLSession ->
             if (hostname != CDN_HOST) return@HostnameVerifier false
             val peer = session.peerCertificates.firstOrNull() as? X509Certificate

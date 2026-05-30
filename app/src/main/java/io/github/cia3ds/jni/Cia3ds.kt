@@ -23,7 +23,6 @@ class Cia3ds private constructor(private val appCtx: Context) {
         System.loadLibrary("cia3ds")
     }
 
-    /** Returns 0 on success, 10 if already-decrypted (original bytes copied to output), non-zero on failure. */
     private external fun nativeDecryptCia(
         inFd: Int,
         outFd: Int,
