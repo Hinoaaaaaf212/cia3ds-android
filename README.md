@@ -23,8 +23,11 @@ games) that installs in any 3DS emulator that accepts plaintext content
 
 ## Status
 
-Actively in early development. Core pipeline (ctrtool extract, NCCH-flags
-patch, makerom rebuild)
+Stable and feature-complete. The full pipeline (ctrtool extract, NCCH-flags
+patch, makerom rebuild) works for `.cia` and `.3ds` input across game, DLC,
+update, system, and DSiWare titles. New features land occasionally; see the
+[releases](https://github.com/Hinoaaaaaf212/cia3ds-android/releases) for what's
+changed.
 
 ## Build
 
