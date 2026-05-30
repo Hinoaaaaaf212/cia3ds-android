@@ -79,8 +79,13 @@ jobs:
           CIA3DS_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew :app:assembleRelease --no-daemon
 
+      - name: Name the APK after the tag
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk \
+             "app/build/outputs/apk/release/cia3ds-${GITHUB_REF_NAME}.apk"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/release/cia3ds-*.apk
