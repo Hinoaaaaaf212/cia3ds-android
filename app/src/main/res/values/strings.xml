@@ -25,6 +25,7 @@
     <string name="single_pick_help">Decrypts one file.</string>
     <string name="single_pick_rejected_zip">That is a .zip. Use the "Choose a .zip file" button instead.</string>
     <string name="single_pick_rejected_other">Pick a .cia or .3ds file.</string>
+    <string name="preview_reading">Reading game info…</string>
     <string name="batch_pick_zip_help">Decrypts every .cia/.3ds inside the zip.</string>
     <string name="single_save_as">Decrypt and save…</string>
     <string name="single_share">Share</string>

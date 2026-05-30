@@ -1,6 +1,7 @@
 package io.github.cia3ds.jni
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.util.Log
 import io.github.cia3ds.seed.SeedFetcher
@@ -13,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.ByteBuffer
 import kotlin.coroutines.resume
 
 class Cia3ds private constructor(private val appCtx: Context) {
@@ -33,6 +35,13 @@ class Cia3ds private constructor(private val appCtx: Context) {
         log: NativeLogCallback?,
         seedFetcher: NativeSeedFetcherCallback?,
     ): Int
+
+    private external fun nativePreview(
+        inFd: Int,
+        seedDbPath: String,
+        tmpDir: String,
+        seedFetcher: NativeSeedFetcherCallback?,
+    ): PreviewResult?
 
     private external fun nativeVersion(): String
 
@@ -148,6 +157,36 @@ class Cia3ds private constructor(private val appCtx: Context) {
         close()
     }.flowOn(Dispatchers.IO)
 
+    suspend fun preview(input: Uri): GamePreview? = withContext(Dispatchers.IO) {
+        runCatching {
+            ensureSeedDb()
+            val tmpDir = appCtx.cacheDir.resolve("cia3ds-preview")
+                .apply { mkdirs() }.absolutePath
+            val pfd = appCtx.contentResolver.openFileDescriptor(input, "r")
+                ?: return@runCatching null
+            pfd.use {
+                val fetcher = SeedFetcher(appCtx)
+                val scb = NativeSeedFetcherCallback { tid ->
+                    runBlocking { fetcher.fetch(tid) {} }
+                }
+                val r = nativePreview(it.fd, seedDbFile().absolutePath, tmpDir, scb)
+                    ?: return@use null
+                val icon = r.iconRgba?.takeIf { bytes -> bytes.size == 48 * 48 * 4 }?.let { bytes ->
+                    Bitmap.createBitmap(48, 48, Bitmap.Config.ARGB_8888).apply {
+                        copyPixelsFromBuffer(ByteBuffer.wrap(bytes))
+                    }
+                }
+                GamePreview(
+                    name = r.name.takeIf { n -> n.isNotBlank() },
+                    titleId = r.titleId,
+                    kind = TitleKind.fromNative(r.kind),
+                    version = r.version,
+                    icon = icon,
+                )
+            }
+        }.getOrNull()
+    }
+
     private fun seedDbFile(): File =
         appCtx.cacheDir.resolve("seeddb.bin")
 
@@ -156,6 +195,14 @@ class Cia3ds private constructor(private val appCtx: Context) {
         val asset = appCtx.assets.open(SEEDDB_ASSET).use { it.readBytes() }
         if (target.exists() && target.length() == asset.size.toLong()) return
         target.writeBytes(asset)
+    }
+
+    class PreviewResult {
+        @JvmField var name: String = ""
+        @JvmField var titleId: String = ""
+        @JvmField var kind: String = ""
+        @JvmField var version: String = ""
+        @JvmField var iconRgba: ByteArray? = null
     }
 
     companion object {
@@ -169,6 +216,14 @@ class Cia3ds private constructor(private val appCtx: Context) {
             }
     }
 }
+
+data class GamePreview(
+    val name: String?,
+    val titleId: String,
+    val kind: TitleKind,
+    val version: String,
+    val icon: Bitmap?,
+)
 
 fun interface NativeProgressCallback {
     fun onProgress(percent: Int, message: String)

@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -239,9 +240,17 @@ std::string try_fd_path(int inFd, int &out_dup_fd) {
     int dup_fd = dup(inFd);
     if (dup_fd < 0) return "";
     posix_fadvise(dup_fd, 0, 0, POSIX_FADV_RANDOM);
-    out_dup_fd = dup_fd;
     char buf[64];
     snprintf(buf, sizeof(buf), "/proc/self/fd/%d", dup_fd);
+    // Seekable does not imply the procfs path is re-openable; some SAF fds give
+    // EACCES when reopened by path. Probe, else fall back to staging.
+    int probe = open(buf, O_RDONLY);
+    if (probe < 0) {
+        close(dup_fd);
+        return "";
+    }
+    close(probe);
+    out_dup_fd = dup_fd;
     return buf;
 }
 
@@ -414,6 +423,91 @@ struct Partition {
     uint32_t content_id;
 };
 
+bool pread_full_at(int fd, void *buf, size_t n, off_t off) {
+    uint8_t *p = (uint8_t *)buf;
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = pread(fd, p + got, n - got, off + (off_t)got);
+        if (r <= 0) return false;
+        got += (size_t)r;
+    }
+    return true;
+}
+
+uint32_t rd_u32_le_at(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+// Copy [start, start+len) of an open fd to a new file. pread-based so it does
+// not disturb the fd's own offset (the same fd may be sliced repeatedly).
+bool copy_file_range_to_path(int fd, uint64_t start, uint64_t len,
+                             const std::string &path) {
+    int out = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (out < 0) {
+        LOGE("open %s for write: %s", path.c_str(), strerror(errno));
+        return false;
+    }
+    constexpr size_t kBuf = 256 * 1024;
+    std::unique_ptr<char[]> buf(new char[kBuf]);
+    uint64_t done = 0;
+    bool ok = true;
+    while (done < len) {
+        size_t want = (size_t)std::min<uint64_t>(kBuf, len - done);
+        ssize_t r = pread(fd, buf.get(), want, (off_t)(start + done));
+        if (r <= 0) { ok = false; break; }
+        ssize_t w = 0;
+        while (w < r) {
+            ssize_t k = write(out, buf.get() + w, (size_t)(r - w));
+            if (k <= 0) { ok = false; break; }
+            w += k;
+        }
+        if (!ok) break;
+        done += (uint64_t)r;
+    }
+    close(out);
+    return ok && done == len;
+}
+
+// Carve NCSD/.3ds partitions to standalone NCCH files named like ctrtool's CIA
+// output (c.NNNN.HHHHHHHH) so the rest of the pipeline treats them identically.
+// ctrtool's CciProcess cannot do this for ENCRYPTED carts (its CciFsSnapshotGenerator
+// throws on any non-zero partition crypto type), which is why we slice the header
+// ourselves. slot and content_id are both the partition index, matching makerom's
+// NCSD->CIA content-index convention. Returns false on a malformed header or if no
+// partitions were carved.
+bool carve_ncsd_partitions(const std::string &input_path,
+                           const std::string &contents_dir,
+                           std::vector<Partition> &out) {
+    int fd = open(input_path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    uint8_t hdr[0x100];
+    bool hdr_ok = pread_full_at(fd, hdr, sizeof(hdr), 0x100); // NcsdCommonHeader
+    if (!hdr_ok || memcmp(hdr, "NCSD", 4) != 0) { close(fd); return false; }
+    uint32_t block_size = (uint32_t)0x200u << hdr[0x8E];      // flags.block_size_log
+    bool any = false;
+    bool failed = false;
+    for (int i = 0; i < 8; ++i) {
+        uint32_t blk_off  = rd_u32_le_at(hdr + 0x20 + i * 8 + 0);
+        uint32_t blk_size = rd_u32_le_at(hdr + 0x20 + i * 8 + 4);
+        if (blk_size == 0) continue;
+        uint64_t off = (uint64_t)blk_off * block_size;
+        uint64_t len = (uint64_t)blk_size * block_size;
+        char name[32];
+        snprintf(name, sizeof(name), "c.%04x.%08x", i, i);
+        std::string dst = contents_dir + "/" + name;
+        if (!copy_file_range_to_path(fd, off, len, dst)) { failed = true; break; }
+        Partition p;
+        p.path = dst;
+        p.slot = i;
+        p.content_id = (uint32_t)i;
+        out.push_back(std::move(p));
+        any = true;
+    }
+    close(fd);
+    return any && !failed;
+}
+
 bool splice_region(const std::string &part_path,
                    uint64_t dst_offset,
                    const std::string &src_path) {
@@ -533,6 +627,125 @@ const char *kind_to_suffix(CiaKind k) {
         case CiaKind::TWL: return "TWL";
         default: return "Unknown";
     }
+}
+
+constexpr size_t kSmdhSize       = 0x36C0;
+constexpr size_t kSmdhTitleBase  = 0x08;
+constexpr size_t kSmdhTitleStride = 0x200;
+constexpr size_t kSmdhShortLen   = 0x40;
+constexpr size_t kSmdhLargeIcon  = 0x24C0;
+constexpr int    kIconDim        = 48;
+
+std::string smdh_title_utf8(const uint8_t *title_struct) {
+    std::string out;
+    for (size_t i = 0; i < kSmdhShortLen; ++i) {
+        uint32_t c = (uint32_t)title_struct[i * 2] | ((uint32_t)title_struct[i * 2 + 1] << 8);
+        if (c == 0) break;
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < kSmdhShortLen) {
+            uint32_t lo = (uint32_t)title_struct[(i + 1) * 2]
+                        | ((uint32_t)title_struct[(i + 1) * 2 + 1] << 8);
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+                ++i;
+            }
+        }
+        if (c < 0x80) {
+            out.push_back((char)c);
+        } else if (c < 0x800) {
+            out.push_back((char)(0xC0 | (c >> 6)));
+            out.push_back((char)(0x80 | (c & 0x3F)));
+        } else if (c < 0x10000) {
+            out.push_back((char)(0xE0 | (c >> 12)));
+            out.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+            out.push_back((char)(0x80 | (c & 0x3F)));
+        } else {
+            out.push_back((char)(0xF0 | (c >> 18)));
+            out.push_back((char)(0x80 | ((c >> 12) & 0x3F)));
+            out.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+            out.push_back((char)(0x80 | (c & 0x3F)));
+        }
+    }
+    while (!out.empty() && (out.back() == ' ' || out.back() == '\n' || out.back() == '\r'))
+        out.pop_back();
+    return out;
+}
+
+std::string smdh_best_title(const uint8_t *smdh) {
+    static const int order[] = {1, 0, 2, 3, 4, 5, 8, 9, 6, 7, 10, 11};
+    for (int lang : order) {
+        const uint8_t *t = smdh + kSmdhTitleBase + (size_t)lang * kSmdhTitleStride;
+        std::string s = smdh_title_utf8(t);
+        if (!s.empty()) return s;
+    }
+    return "";
+}
+
+// 3DS icons are 8x8 tiles in raster order; pixels within a tile follow a
+// Morton/Z-order curve. Decodes the 48x48 large icon (tiled RGB565) to
+// row-major RGBA8888; out must hold kIconDim*kIconDim*4 bytes.
+void smdh_decode_large_icon(const uint8_t *icon, uint8_t *out) {
+    constexpr int tile = 8;
+    constexpr int tiles_per_row = kIconDim / tile;
+    for (int ty = 0; ty < tiles_per_row; ++ty) {
+        for (int tx = 0; tx < tiles_per_row; ++tx) {
+            for (int py = 0; py < tile; ++py) {
+                for (int px = 0; px < tile; ++px) {
+                    int morton = 0;
+                    for (int b = 0; b < 3; ++b) {
+                        morton |= ((px >> b) & 1) << (2 * b);
+                        morton |= ((py >> b) & 1) << (2 * b + 1);
+                    }
+                    int tile_index = (ty * tiles_per_row + tx) * (tile * tile) + morton;
+                    uint16_t pix = (uint16_t)icon[tile_index * 2]
+                                 | ((uint16_t)icon[tile_index * 2 + 1] << 8);
+                    int r5 = (pix >> 11) & 0x1F;
+                    int g6 = (pix >> 5) & 0x3F;
+                    int b5 = pix & 0x1F;
+                    uint8_t r = (uint8_t)((r5 << 3) | (r5 >> 2));
+                    uint8_t g = (uint8_t)((g6 << 2) | (g6 >> 4));
+                    uint8_t b = (uint8_t)((b5 << 3) | (b5 >> 2));
+                    int ox = tx * tile + px;
+                    int oy = ty * tile + py;
+                    uint8_t *p = out + ((size_t)oy * kIconDim + ox) * 4;
+                    p[0] = r; p[1] = g; p[2] = b; p[3] = 0xFF;
+                }
+            }
+        }
+    }
+}
+
+bool parse_exefs_icon(const std::string &exefs_path,
+                      std::string &name_out,
+                      std::vector<uint8_t> &icon_out) {
+    int fd = open(exefs_path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    uint8_t header[0x200];
+    bool ok = pread_full_at(fd, header, sizeof(header), 0);
+    if (!ok) { close(fd); return false; }
+    uint64_t icon_off = 0, icon_size = 0;
+    bool found = false;
+    for (int i = 0; i < 8; ++i) {
+        const uint8_t *e = header + i * 0x10;
+        char nm[9];
+        memcpy(nm, e, 8);
+        nm[8] = '\0';
+        if (strncmp(nm, "icon", 8) == 0) {
+            icon_off  = rd_u32_le_at(e + 0x08);
+            icon_size = rd_u32_le_at(e + 0x0C);
+            found = true;
+            break;
+        }
+    }
+    if (!found || icon_size < kSmdhSize) { close(fd); return false; }
+    std::vector<uint8_t> smdh(kSmdhSize);
+    ok = pread_full_at(fd, smdh.data(), kSmdhSize, (off_t)(0x200 + icon_off));
+    close(fd);
+    if (!ok) return false;
+    if (memcmp(smdh.data(), "SMDH", 4) != 0) return false;
+    name_out = smdh_best_title(smdh.data());
+    icon_out.assign((size_t)kIconDim * kIconDim * 4, 0);
+    smdh_decode_large_icon(smdh.data() + kSmdhLargeIcon, icon_out.data());
+    return true;
 }
 
 } // namespace
@@ -766,7 +979,21 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
 
     if (bail_if_cancelled()) return 13;
     progress.post(20, "Extracting partitions");
-    {
+    std::vector<Partition> partitions;
+    if (info.is_3ds) {
+        // ctrtool cannot extract encrypted NCSD partitions (its CciProcess throws),
+        // so carve them ourselves into the same c.NNNN.HHHHHHHH layout the CIA path
+        // produces. The per-region decrypt below then runs on each carved NCCH.
+        sink.emit("input is NCSD/.3ds; carving partitions directly");
+        if (!carve_ncsd_partitions(input_path_for_tools, contents_dir, partitions)) {
+            sink.emit("ERR: could not carve NCCH partitions from this .3ds/NCSD file.");
+            sink.emit("Most common reasons:");
+            sink.emit("  - The file is corrupt or truncated (incomplete dump).");
+            sink.emit("  - The cartridge layout is unusual and unsupported.");
+            sink.emit("Try re-dumping the cartridge, or pick a different file.");
+            return 5;
+        }
+    } else {
         std::string contents_prefix = contents_dir + "/c";
         sink.emitf("$ ctrtool --seeddb=%s --contents=%s %s",
                    seeddb_path.c_str(), contents_prefix.c_str(),
@@ -780,7 +1007,7 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         if (!cdn_seed_hex.empty()) argv.push("--seed=" + cdn_seed_hex);
         argv.push(input_path_for_tools);
         char *empty_envp[] = {nullptr};
-    int rc = ctrtool_main(argv.size(), argv.data(), empty_envp);
+        int rc = ctrtool_main(argv.size(), argv.data(), empty_envp);
         std::string out = cap.read();
         sink.emitBlock(out);
         sink.emitf("[ctrtool extract exit=%d]", rc);
@@ -793,44 +1020,43 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
             sink.emit("Try re-downloading the file, or pick a different one.");
             return 5;
         }
-    }
 
-    std::vector<Partition> partitions;
-    if (!list_extracted_partitions(contents_dir, partitions)) {
-        int file_count = 0;
-        bool any_c_prefix = false;
-        DIR *d = opendir(contents_dir.c_str());
-        if (d) {
-            struct dirent *e;
-            while ((e = readdir(d)) != nullptr) {
-                std::string n = e->d_name;
-                if (n == "." || n == "..") continue;
-                file_count++;
-                if (n.rfind("c.", 0) == 0) any_c_prefix = true;
-                sink.emitf("  contents/%s", n.c_str());
+        if (!list_extracted_partitions(contents_dir, partitions)) {
+            int file_count = 0;
+            bool any_c_prefix = false;
+            DIR *d = opendir(contents_dir.c_str());
+            if (d) {
+                struct dirent *e;
+                while ((e = readdir(d)) != nullptr) {
+                    std::string n = e->d_name;
+                    if (n == "." || n == "..") continue;
+                    file_count++;
+                    if (n.rfind("c.", 0) == 0) any_c_prefix = true;
+                    sink.emitf("  contents/%s", n.c_str());
+                }
+                closedir(d);
             }
-            closedir(d);
+            if (file_count == 0) {
+                sink.emit("ERR: this file appears to already be decrypted.");
+                sink.emit("ctrtool extracted no encrypted partitions, which means the");
+                sink.emit("input has already been processed. Try installing it directly");
+                sink.emit("in your emulator, or pick a still-encrypted CIA/3DS file.");
+                return 11;
+            }
+            if (any_c_prefix) {
+                sink.emit("ERR: ctrtool wrote partition files but with an unexpected naming pattern.");
+                sink.emit("This usually means the engine and ctrtool versions are out of sync,");
+                sink.emit("which is a packaging bug rather than a problem with your file.");
+                sink.emit("Please report this with the log above so it can be fixed.");
+            } else {
+                sink.emitf("ERR: ctrtool extracted files into %s, but none look like NCCH partitions.", contents_dir.c_str());
+                sink.emit("Most common reasons:");
+                sink.emit("  - The CIA/3DS is malformed or truncated.");
+                sink.emit("  - The title uses an unusual layout the engine doesn't recognise.");
+                sink.emit("Try re-downloading the file, or pick a different one.");
+            }
+            return 6;
         }
-        if (file_count == 0) {
-            sink.emit("ERR: this file appears to already be decrypted.");
-            sink.emit("ctrtool extracted no encrypted partitions, which means the");
-            sink.emit("input has already been processed. Try installing it directly");
-            sink.emit("in your emulator, or pick a still-encrypted CIA/3DS file.");
-            return 11;
-        }
-        if (any_c_prefix) {
-            sink.emit("ERR: ctrtool wrote partition files but with an unexpected naming pattern.");
-            sink.emit("This usually means the engine and ctrtool versions are out of sync,");
-            sink.emit("which is a packaging bug rather than a problem with your file.");
-            sink.emit("Please report this with the log above so it can be fixed.");
-        } else {
-            sink.emitf("ERR: ctrtool extracted files into %s, but none look like NCCH partitions.", contents_dir.c_str());
-            sink.emit("Most common reasons:");
-            sink.emit("  - The CIA/3DS is malformed or truncated.");
-            sink.emit("  - The title uses an unusual layout the engine doesn't recognise.");
-            sink.emit("Try re-downloading the file, or pick a different one.");
-        }
-        return 6;
     }
     sink.emitf("extracted %zu partition(s) (TMD enabled count above)", partitions.size());
     for (auto &p : partitions) {
@@ -874,20 +1100,26 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         std::string ef_path = region_dir + "/exefs.bin";
         std::string rf_path = region_dir + "/romfs.bin";
 
-        sink.emitf("$ ctrtool -n %d --exheader=%s --exefs=%s --romfs=%s --seeddb=%s %s",
-                   p.slot, eh_path.c_str(), ef_path.c_str(), rf_path.c_str(),
-                   seeddb_path.c_str(), input_path_for_tools.c_str());
+        // For NCSD the per-partition file is a standalone NCCH; ctrtool detects it
+        // as an NCCH and decrypts the regions without -n. For CIA we select the
+        // content out of the original package by index with -n.
+        const std::string &region_input = info.is_3ds ? p.path : input_path_for_tools;
+        std::string n_flag = info.is_3ds ? "" : ("-n " + std::to_string(p.slot) + " ");
+        sink.emitf("$ ctrtool %s--exheader=%s --exefs=%s --romfs=%s --seeddb=%s %s",
+                   n_flag.c_str(), eh_path.c_str(), ef_path.c_str(), rf_path.c_str(),
+                   seeddb_path.c_str(), region_input.c_str());
         StdoutCapture cap(log_path);
-        Argv argv({
-            "ctrtool",
-            "-n", std::to_string(p.slot),
-            "--exheader=" + eh_path,
-            "--exefs=" + ef_path,
-            "--romfs=" + rf_path,
-            "--seeddb=" + seeddb_path,
-        });
+        Argv argv({"ctrtool"});
+        if (!info.is_3ds) {
+            argv.push("-n");
+            argv.push(std::to_string(p.slot));
+        }
+        argv.push("--exheader=" + eh_path);
+        argv.push("--exefs=" + ef_path);
+        argv.push("--romfs=" + rf_path);
+        argv.push("--seeddb=" + seeddb_path);
         if (!cdn_seed_hex.empty()) argv.push("--seed=" + cdn_seed_hex);
-        argv.push(input_path_for_tools);
+        argv.push(region_input);
         char *empty_envp2[] = {nullptr};
         int rc = ctrtool_main(argv.size(), argv.data(), empty_envp2);
         std::string out = cap.read();
@@ -1070,6 +1302,128 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     rmtree(work);
     progress.post(100, "Done");
     return 0;
+}
+
+// Pre-decrypt preview: decrypts only the first partition's ExeFS (never the
+// romfs) to read the SMDH name + icon. Returns a Cia3ds$PreviewResult or null.
+extern "C" JNIEXPORT jobject JNICALL
+Java_io_github_cia3ds_jni_Cia3ds_nativePreview(
+    JNIEnv *env, jobject /*thiz*/,
+    jint inFd, jstring jSeedDb, jstring jTmpDir,
+    jobject seedFetcherCallback) {
+
+    const char *seeddb_c = env->GetStringUTFChars(jSeedDb, nullptr);
+    const char *tmp_c    = env->GetStringUTFChars(jTmpDir, nullptr);
+    std::string seeddb_path = seeddb_c;
+    std::string tmp_dir = tmp_c;
+    env->ReleaseStringUTFChars(jSeedDb, seeddb_c);
+    env->ReleaseStringUTFChars(jTmpDir, tmp_c);
+
+    SeedFetcher seedFetcher{env, seedFetcherCallback, nullptr};
+    if (seedFetcherCallback) {
+        jclass cls = env->GetObjectClass(seedFetcherCallback);
+        seedFetcher.onFetch = env->GetMethodID(cls, "onFetch", "(Ljava/lang/String;)[B");
+        env->DeleteLocalRef(cls);
+    }
+
+    SniffedMetadata sniffed;
+    if (!sniff_metadata_from_fd(inFd, sniffed) || !sniffed.valid) return nullptr;
+    CiaKind kind = classify_kind(sniffed.title_id);
+
+    if (!make_dir_p(tmp_dir)) return nullptr;
+    std::string work = tmp_dir + "/pwork";
+    rmtree(work);
+    if (!make_dir_p(work)) return nullptr;
+    struct WorkGuard {
+        std::string p;
+        ~WorkGuard() { if (!p.empty()) rmtree(p); }
+    } work_guard{work};
+
+    std::string log_path = work + "/tool.log";
+    std::string exefs_path = work + "/exefs.bin";
+
+    struct FdGuard {
+        int fd = -1;
+        ~FdGuard() { if (fd >= 0) ::close(fd); }
+    } fd_guard;
+    std::string input_for_tools;
+    {
+        int dup_fd = -1;
+        std::string p = try_fd_path(inFd, dup_fd);
+        if (!p.empty()) {
+            fd_guard.fd = dup_fd;
+            input_for_tools = p;
+        } else {
+            std::string staged = work + "/input.bin";
+            if (!copy_fd_to_path(inFd, staged)) return nullptr;
+            input_for_tools = staged;
+        }
+    }
+
+    std::string ncch_input = input_for_tools;
+    bool use_n = !sniffed.is_3ds;
+    if (sniffed.is_3ds) {
+        std::vector<Partition> parts;
+        if (!carve_ncsd_partitions(input_for_tools, work, parts) || parts.empty()) {
+            return nullptr;
+        }
+        ncch_input = parts[0].path;
+    }
+
+    std::string cdn_seed_hex;
+    if (!sniffed.title_id.empty() && seedFetcherCallback) {
+        std::string raw = seedFetcher.fetch(sniffed.title_id);
+        if (raw.size() == 16) {
+            char buf[33];
+            for (size_t i = 0; i < 16; ++i)
+                snprintf(buf + i * 2, 3, "%02x", (unsigned char)raw[i]);
+            cdn_seed_hex = buf;
+        }
+    }
+
+    {
+        StdoutCapture cap(log_path);
+        Argv argv({"ctrtool"});
+        if (use_n) { argv.push("-n"); argv.push("0"); }
+        argv.push("--exefs=" + exefs_path);
+        argv.push("--seeddb=" + seeddb_path);
+        if (!cdn_seed_hex.empty()) argv.push("--seed=" + cdn_seed_hex);
+        argv.push(ncch_input);
+        char *empty_envp[] = {nullptr};
+        int rc = ctrtool_main(argv.size(), argv.data(), empty_envp);
+        cap.read();
+        if (rc != 0) return nullptr;
+    }
+
+    std::string name;
+    std::vector<uint8_t> icon;
+    bool parsed = parse_exefs_icon(exefs_path, name, icon);
+
+    jclass cls = env->FindClass("io/github/cia3ds/jni/Cia3ds$PreviewResult");
+    if (!cls) return nullptr;
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
+    jobject result = env->NewObject(cls, ctor);
+    if (!result) return nullptr;
+
+    auto set_string = [&](const char *field, const std::string &val) {
+        jfieldID f = env->GetFieldID(cls, field, "Ljava/lang/String;");
+        jstring js = env->NewStringUTF(val.c_str());
+        env->SetObjectField(result, f, js);
+        env->DeleteLocalRef(js);
+    };
+    set_string("name", parsed ? name : std::string());
+    set_string("titleId", sniffed.title_id);
+    set_string("kind", kind_to_suffix(kind));
+    set_string("version", sniffed.title_version.empty() ? "0" : sniffed.title_version);
+
+    if (parsed && icon.size() == (size_t)kIconDim * kIconDim * 4) {
+        jbyteArray arr = env->NewByteArray((jsize)icon.size());
+        env->SetByteArrayRegion(arr, 0, (jsize)icon.size(), (const jbyte *)icon.data());
+        jfieldID f = env->GetFieldID(cls, "iconRgba", "[B");
+        env->SetObjectField(result, f, arr);
+        env->DeleteLocalRef(arr);
+    }
+    return result;
 }
 
 extern "C" JNIEXPORT jstring JNICALL

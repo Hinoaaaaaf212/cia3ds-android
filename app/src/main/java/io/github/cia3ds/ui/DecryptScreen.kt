@@ -9,22 +9,28 @@ import android.os.IBinder
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,16 +50,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import io.github.cia3ds.R
 import io.github.cia3ds.jni.ActualFormat
 import io.github.cia3ds.jni.Cia3ds
 import io.github.cia3ds.jni.DecryptMetadata
+import io.github.cia3ds.jni.GamePreview
 import io.github.cia3ds.jni.DecryptResult
 import io.github.cia3ds.jni.DecryptUpdate
 import io.github.cia3ds.jni.OutputFormat
@@ -107,6 +119,8 @@ fun DecryptScreen() {
     var status by remember { mutableStateOf("") }
     var lastResult by remember { mutableStateOf<DecryptResult?>(null) }
     var metadata by remember { mutableStateOf(DecryptMetadata()) }
+    var gamePreview by remember { mutableStateOf<GamePreview?>(null) }
+    var previewLoading by remember { mutableStateOf(false) }
     val logLines = remember { mutableStateListOf<String>() }
     var pendingTempFile by remember { mutableStateOf<File?>(null) }
 
@@ -161,6 +175,8 @@ fun DecryptScreen() {
         pickedZipName = null
         zipEntryNames = emptyList()
         zipScanning = false
+        gamePreview = null
+        previewLoading = false
         resetRuntime()
     }
 
@@ -535,7 +551,11 @@ fun DecryptScreen() {
                     )
                 }
 
-                MetadataLine(metadata)
+                if (inputMode == InputMode.SingleFile) {
+                    GamePreviewCard(gamePreview, previewLoading)
+                } else {
+                    MetadataLine(metadata)
+                }
 
                 if (inputMode != InputMode.None) {
                     Text(
@@ -735,6 +755,18 @@ fun DecryptScreen() {
         )
     }
 
+    LaunchedEffect(singleFileUri) {
+        val uri = singleFileUri
+        gamePreview = null
+        if (uri == null || inputMode != InputMode.SingleFile) {
+            previewLoading = false
+            return@LaunchedEffect
+        }
+        previewLoading = true
+        gamePreview = runCatching { Cia3ds.get(ctx).preview(uri) }.getOrNull()
+        previewLoading = false
+    }
+
     LaunchedEffect(incomingUriState.value) {
         val uri = incomingUriState.value ?: return@LaunchedEffect
         val name = DocumentFile.fromSingleUri(ctx, uri)?.name
@@ -791,6 +823,68 @@ private fun MetadataLine(metadata: DecryptMetadata) {
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+@Composable
+private fun GamePreviewCard(preview: GamePreview?, loading: Boolean) {
+    if (preview == null && !loading) return
+    val sub = buildList {
+        preview?.kind?.takeIf { it != TitleKind.Unknown }?.let { add(it.display) }
+        preview?.version?.takeIf { it.isNotBlank() && it != "0" }?.let { add("v$it") }
+        preview?.titleId?.takeIf { it.isNotBlank() }?.let { add(it) }
+    }.joinToString("  ·  ")
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                val icon = preview?.icon
+                if (icon != null) {
+                    Image(
+                        bitmap = icon.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else if (loading) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Column {
+                val title = preview?.name
+                    ?: preview?.titleId?.takeIf { it.isNotBlank() }
+                    ?: stringResource(R.string.preview_reading)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (sub.isNotEmpty()) {
+                    Text(
+                        text = sub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

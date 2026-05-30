@@ -1,13 +1,25 @@
 package io.github.cia3ds.seed
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.KeyStore
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 import java.util.Locale
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSession
+import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 class SeedFetcher(private val appCtx: Context) {
 
@@ -39,6 +51,11 @@ class SeedFetcher(private val appCtx: Context) {
                 }
             }
 
+            if (!isOnline()) {
+                log("seed: offline; will use bundled seeddb.bin if needed")
+                return@withContext null
+            }
+
             var allCountriesReturned404 = true
             for (country in COUNTRIES) {
                 val tidUpper = tid.uppercase(Locale.US)
@@ -51,6 +68,10 @@ class SeedFetcher(private val appCtx: Context) {
                         instanceFollowRedirects = true
                         setRequestProperty("User-Agent", "cia3ds-android")
                         requestMethod = "GET"
+                        if (this is HttpsURLConnection) {
+                            cdnSocketFactory()?.let { sslSocketFactory = it }
+                            hostnameVerifier = cdnHostnameVerifier
+                        }
                     }
                     try {
                         val code = conn.responseCode
@@ -91,7 +112,57 @@ class SeedFetcher(private val appCtx: Context) {
             null
         }
 
+    private fun isOnline(): Boolean {
+        val cm = appCtx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    private fun cdnSocketFactory(): SSLSocketFactory? {
+        cachedFactory?.let { return it }
+        return synchronized(SeedFetcher) {
+            cachedFactory ?: runCatching {
+                val cert = appCtx.assets.open(CDN_CERT_ASSET).use { input ->
+                    CertificateFactory.getInstance("X.509")
+                        .generateCertificate(input) as X509Certificate
+                }
+                val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
+                    load(null, null)
+                    setCertificateEntry("cdn-nintendo", cert)
+                }
+                val tmf = TrustManagerFactory.getInstance(
+                    TrustManagerFactory.getDefaultAlgorithm()
+                ).apply { init(ks) }
+                val tms = tmf.trustManagers.filterIsInstance<X509TrustManager>()
+                val ctx = SSLContext.getInstance("TLS").apply {
+                    init(null, tms.toTypedArray(), null)
+                }
+                ctx.socketFactory
+            }.getOrNull().also { cachedFactory = it }
+        }
+    }
+
     companion object {
+        private const val CDN_CERT_ASSET = "cdn-nintendo-leaf.pem"
+        private const val CDN_HOST = "kagiya-ctr.cdn.nintendo.net"
+        @Volatile private var cachedFactory: SSLSocketFactory? = null
+
+        // The CDN's 2012 cert carries its name only in the CN (*.cdn.nintendo.net)
+        // with an empty SAN list, which modern verifiers reject. The cert itself is
+        // pinned by cdnSocketFactory(), so accepting the CN wildcard for this exact
+        // host adds no risk: only that one cert can complete the handshake.
+        private val cdnHostnameVerifier = HostnameVerifier { hostname, session: SSLSession ->
+            if (hostname != CDN_HOST) return@HostnameVerifier false
+            val peer = session.peerCertificates.firstOrNull() as? X509Certificate
+                ?: return@HostnameVerifier false
+            val cn = peer.subjectX500Principal.name
+                .split(',').map { it.trim() }
+                .firstOrNull { it.startsWith("CN=") }?.removePrefix("CN=")
+            cn == "*.cdn.nintendo.net"
+        }
+
         private val COUNTRIES = listOf("US", "JP", "GB", "DE", "FR", "ES", "IT", "NL", "AU")
     }
 }
