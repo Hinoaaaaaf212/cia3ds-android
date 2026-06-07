@@ -48,7 +48,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,6 +79,7 @@ import io.github.cia3ds.util.SpaceCheckResult
 import io.github.cia3ds.util.checkFreeSpace
 import io.github.cia3ds.util.formatBytes
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
@@ -89,71 +89,31 @@ import java.io.File
 import java.util.UUID
 import java.util.zip.ZipInputStream
 
-private enum class InputMode { None, SingleFile, Zip }
+enum class InputMode { None, SingleFile, Zip }
 
-@Composable
-fun DecryptScreen() {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val service = rememberBoundService(ctx)
-    val outputTemplateState = LocalOutputTemplate.current
-    val incomingUriState = LocalIncomingUri.current
-
-    var inputMode by remember { mutableStateOf(InputMode.None) }
-
-    var singleFileUri by remember { mutableStateOf<Uri?>(null) }
-    var singleFileName by remember { mutableStateOf<String?>(null) }
-    var pickedZipUri by remember { mutableStateOf<Uri?>(null) }
-    var pickedZipName by remember { mutableStateOf<String?>(null) }
-    var zipEntryNames by remember { mutableStateOf<List<String>>(emptyList()) }
-    var zipScanning by remember { mutableStateOf(false) }
-    val zipEntryCount = zipEntryNames.size
-    var output by remember { mutableStateOf<Uri?>(null) }
-
-    var format by remember { mutableStateOf(OutputFormat.Cia) }
-    var zipGrouped by remember { mutableStateOf(false) }
-
-    var isRunning by remember { mutableStateOf(false) }
-    var runningJob by remember { mutableStateOf<Job?>(null) }
-    var percent by remember { mutableStateOf(0) }
-    var status by remember { mutableStateOf("") }
-    var lastResult by remember { mutableStateOf<DecryptResult?>(null) }
-    var metadata by remember { mutableStateOf(DecryptMetadata()) }
-    var gamePreview by remember { mutableStateOf<GamePreview?>(null) }
-    var previewLoading by remember { mutableStateOf(false) }
-    val logLines = remember { mutableStateListOf<String>() }
-    var pendingTempFile by remember { mutableStateOf<File?>(null) }
-
-    val batchState = service?.state?.collectAsState()
-
-    var pendingLowSpace by remember { mutableStateOf<PendingSpaceWarning?>(null) }
-
-    val saveLogLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("text/plain")
-    ) { uri ->
-        if (uri != null) {
-            scope.launch(Dispatchers.IO) {
-                runCatching {
-                    val src = LogStream.file(ctx)
-                    if (src.exists()) {
-                        ctx.contentResolver.openOutputStream(uri, "wt")?.use { os ->
-                            src.inputStream().use { it.copyTo(os) }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    fun launchSaveLog() {
-        val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
-            .format(java.util.Date())
-        saveLogLauncher.launch("cia3ds-log-$ts.txt")
-    }
-
-    val isBatch = when (inputMode) {
-        InputMode.Zip -> zipEntryCount > 1
-        else -> false
-    }
+class DecryptUiState {
+    var inputMode by mutableStateOf(InputMode.None)
+    var singleFileUri by mutableStateOf<Uri?>(null)
+    var singleFileName by mutableStateOf<String?>(null)
+    var pickedZipUri by mutableStateOf<Uri?>(null)
+    var pickedZipName by mutableStateOf<String?>(null)
+    var zipEntryNames by mutableStateOf<List<String>>(emptyList())
+    var zipScanning by mutableStateOf(false)
+    var output by mutableStateOf<Uri?>(null)
+    var format by mutableStateOf(OutputFormat.Cia)
+    var zipGrouped by mutableStateOf(false)
+    var isRunning by mutableStateOf(false)
+    var runningJob by mutableStateOf<Job?>(null)
+    var percent by mutableStateOf(0)
+    var status by mutableStateOf("")
+    var lastResult by mutableStateOf<DecryptResult?>(null)
+    var metadata by mutableStateOf(DecryptMetadata())
+    var gamePreview by mutableStateOf<GamePreview?>(null)
+    var previewLoading by mutableStateOf(false)
+    var pendingTempFile by mutableStateOf<File?>(null)
+    var pendingLowSpace by mutableStateOf<PendingSpaceWarning?>(null)
+    var singleFileError by mutableStateOf<String?>(null)
+    val logLines = mutableStateListOf<String>()
 
     fun resetRuntime() {
         isRunning = false
@@ -180,58 +140,9 @@ fun DecryptScreen() {
         resetRuntime()
     }
 
-    var singleFileError by remember { mutableStateOf<String?>(null) }
-
-    val pickSingleFile = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            val name = DocumentFile.fromSingleUri(ctx, uri)?.name
-            val lower = name?.lowercase() ?: ""
-            if (lower.endsWith(".zip")) {
-                singleFileError = ctx.getString(R.string.single_pick_rejected_zip)
-                return@rememberLauncherForActivityResult
-            }
-            if (!lower.endsWith(".cia") && !lower.endsWith(".3ds")) {
-                singleFileError = ctx.getString(R.string.single_pick_rejected_other)
-                return@rememberLauncherForActivityResult
-            }
-            runCatching {
-                ctx.contentResolver.takePersistableUriPermission(
-                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
-            resetForNewInput()
-            singleFileError = null
-            inputMode = InputMode.SingleFile
-            singleFileUri = uri
-            singleFileName = name
-        }
-    }
-
-    val pickZipFile = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            runCatching {
-                ctx.contentResolver.takePersistableUriPermission(
-                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
-            resetForNewInput()
-            inputMode = InputMode.Zip
-            pickedZipUri = uri
-            pickedZipName = DocumentFile.fromSingleUri(ctx, uri)?.name
-            zipScanning = true
-            scope.launch {
-                val names = withContext(Dispatchers.IO) { listZipEntries(ctx, uri) }
-                zipEntryNames = names
-                zipScanning = false
-            }
-        }
-    }
-
-    fun launchSingleDecrypt(
+    fun startSingleDecrypt(
+        ctx: Context,
+        appScope: CoroutineScope,
         inUri: Uri,
         outUri: Uri,
         displayName: String,
@@ -252,7 +163,7 @@ fun DecryptScreen() {
         logLines += firstLine
         LogStream.append(firstLine)
         pendingTempFile = tempFile
-        runningJob = scope.launch {
+        runningJob = appScope.launch {
             val engine = runCatching { Cia3ds.get(ctx) }
                 .onFailure { t ->
                     Log.e(TAG, "Cia3ds.get failed", t)
@@ -326,11 +237,11 @@ fun DecryptScreen() {
         }
     }
 
-    fun startSingleAfterOutputPicked(outUri: Uri) {
+    fun startSingleAfterOutputPicked(ctx: Context, appScope: CoroutineScope, outUri: Uri) {
         when (inputMode) {
             InputMode.SingleFile -> {
                 val inUri = singleFileUri ?: return
-                launchSingleDecrypt(inUri, outUri, singleFileName ?: "input", null)
+                startSingleDecrypt(ctx, appScope, inUri, outUri, singleFileName ?: "input", null)
             }
             InputMode.Zip -> {
                 val zipUri = pickedZipUri ?: return
@@ -343,7 +254,7 @@ fun DecryptScreen() {
                 val extractMsg = "extracting $firstEntry…"
                 logLines += extractMsg
                 LogStream.append(extractMsg)
-                runningJob = scope.launch {
+                runningJob = appScope.launch {
                     val pair = withContext(Dispatchers.IO) {
                         extractZipEntryToTemp(ctx, zipUri, firstEntry)
                     }
@@ -359,7 +270,9 @@ fun DecryptScreen() {
                         return@launch
                     }
                     val (extracted, displayName) = pair
-                    launchSingleDecrypt(
+                    startSingleDecrypt(
+                        ctx,
+                        appScope,
                         Uri.fromFile(extracted),
                         outUri,
                         "${pickedZipName ?: "zip"} / $displayName",
@@ -371,6 +284,157 @@ fun DecryptScreen() {
             else -> {}
         }
     }
+
+    fun startBatch(
+        ctx: Context,
+        appScope: CoroutineScope,
+        service: DecryptionService?,
+        template: String,
+        treeUri: Uri,
+    ) {
+        val zipUri = pickedZipUri ?: return
+        val zipName = pickedZipName ?: "archive.zip"
+        val entryNamesSnapshot = zipEntryNames.toList()
+        val capturedFormat = format
+        val capturedGrouped = zipGrouped
+        appScope.launch {
+            val items = withContext(Dispatchers.IO) {
+                val outDir = DocumentFile.fromTreeUri(ctx, treeUri) ?: return@withContext null
+                buildBatchItemsForZip(
+                    zipUri = zipUri,
+                    zipName = zipName,
+                    entryNames = entryNamesSnapshot,
+                    outDir = outDir,
+                    format = capturedFormat,
+                    zipGrouped = capturedGrouped,
+                    template = template,
+                )
+            } ?: emptyList()
+            if (items.isEmpty()) return@launch
+            val intent = Intent(ctx, DecryptionService::class.java)
+            ctx.startForegroundService(intent)
+            service?.startBatch(items, capturedFormat)
+        }
+    }
+}
+
+@Composable
+fun DecryptScreen(state: DecryptUiState, appScope: CoroutineScope) {
+    val ctx = LocalContext.current
+    val service = rememberBoundService(ctx)
+    val outputTemplateState = LocalOutputTemplate.current
+    val incomingUriState = LocalIncomingUri.current
+
+    var inputMode by state::inputMode
+    var singleFileUri by state::singleFileUri
+    var singleFileName by state::singleFileName
+    var pickedZipUri by state::pickedZipUri
+    var pickedZipName by state::pickedZipName
+    var zipEntryNames by state::zipEntryNames
+    var zipScanning by state::zipScanning
+    val zipEntryCount = zipEntryNames.size
+    var output by state::output
+
+    var format by state::format
+    var zipGrouped by state::zipGrouped
+
+    var isRunning by state::isRunning
+    var runningJob by state::runningJob
+    var percent by state::percent
+    var status by state::status
+    var lastResult by state::lastResult
+    var metadata by state::metadata
+    var gamePreview by state::gamePreview
+    var previewLoading by state::previewLoading
+    val logLines = state.logLines
+    var pendingTempFile by state::pendingTempFile
+
+    val batchState = service?.state?.collectAsState()
+
+    var pendingLowSpace by state::pendingLowSpace
+
+    val saveLogLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri != null) {
+            appScope.launch(Dispatchers.IO) {
+                runCatching {
+                    val src = LogStream.file(ctx)
+                    if (src.exists()) {
+                        ctx.contentResolver.openOutputStream(uri, "wt")?.use { os ->
+                            src.inputStream().use { it.copyTo(os) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fun launchSaveLog() {
+        val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        saveLogLauncher.launch("cia3ds-log-$ts.txt")
+    }
+
+    val isBatch = when (inputMode) {
+        InputMode.Zip -> zipEntryCount > 1
+        else -> false
+    }
+
+    fun resetForNewInput() = state.resetForNewInput()
+
+    var singleFileError by state::singleFileError
+
+    val pickSingleFile = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val name = DocumentFile.fromSingleUri(ctx, uri)?.name
+            val lower = name?.lowercase() ?: ""
+            if (lower.endsWith(".zip")) {
+                singleFileError = ctx.getString(R.string.single_pick_rejected_zip)
+                return@rememberLauncherForActivityResult
+            }
+            if (!lower.endsWith(".cia") && !lower.endsWith(".3ds")) {
+                singleFileError = ctx.getString(R.string.single_pick_rejected_other)
+                return@rememberLauncherForActivityResult
+            }
+            runCatching {
+                ctx.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            resetForNewInput()
+            singleFileError = null
+            inputMode = InputMode.SingleFile
+            singleFileUri = uri
+            singleFileName = name
+        }
+    }
+
+    val pickZipFile = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                ctx.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            resetForNewInput()
+            inputMode = InputMode.Zip
+            pickedZipUri = uri
+            pickedZipName = DocumentFile.fromSingleUri(ctx, uri)?.name
+            zipScanning = true
+            appScope.launch {
+                val names = withContext(Dispatchers.IO) { listZipEntries(ctx, uri) }
+                zipEntryNames = names
+                zipScanning = false
+            }
+        }
+    }
+
+    fun startSingleAfterOutputPicked(outUri: Uri) =
+        state.startSingleAfterOutputPicked(ctx, appScope, outUri)
 
     val pickOutputFile = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -398,32 +462,8 @@ fun DecryptScreen() {
         }
     }
 
-    fun startBatchAfterTreePicked(uri: Uri) {
-        val zipUri = pickedZipUri ?: return
-        val zipName = pickedZipName ?: "archive.zip"
-        val entryNamesSnapshot = zipEntryNames.toList()
-        val capturedFormat = format
-        val capturedGrouped = zipGrouped
-        val capturedTemplate = outputTemplateState.value
-        scope.launch {
-            val items = withContext(Dispatchers.IO) {
-                val outDir = DocumentFile.fromTreeUri(ctx, uri) ?: return@withContext null
-                buildBatchItemsForZip(
-                    zipUri = zipUri,
-                    zipName = zipName,
-                    entryNames = entryNamesSnapshot,
-                    outDir = outDir,
-                    format = capturedFormat,
-                    zipGrouped = capturedGrouped,
-                    template = capturedTemplate,
-                )
-            } ?: emptyList()
-            if (items.isEmpty()) return@launch
-            val intent = Intent(ctx, DecryptionService::class.java)
-            ctx.startForegroundService(intent)
-            service?.startBatch(items, capturedFormat)
-        }
-    }
+    fun startBatchAfterTreePicked(uri: Uri) =
+        state.startBatch(ctx, appScope, service, outputTemplateState.value, uri)
 
     val pickOutputTree = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -757,11 +797,13 @@ fun DecryptScreen() {
 
     LaunchedEffect(singleFileUri) {
         val uri = singleFileUri
-        gamePreview = null
         if (uri == null || inputMode != InputMode.SingleFile) {
+            gamePreview = null
             previewLoading = false
             return@LaunchedEffect
         }
+        if (gamePreview != null) return@LaunchedEffect
+        gamePreview = null
         previewLoading = true
         gamePreview = runCatching { Cia3ds.get(ctx).preview(uri) }.getOrNull()
         previewLoading = false
@@ -784,7 +826,7 @@ fun DecryptScreen() {
                 pickedZipUri = uri
                 pickedZipName = name
                 zipScanning = true
-                scope.launch {
+                appScope.launch {
                     val names = withContext(Dispatchers.IO) { listZipEntries(ctx, uri) }
                     zipEntryNames = names
                     zipScanning = false
@@ -1109,7 +1151,7 @@ private fun buildBatchItemsForZip(
     return out
 }
 
-private sealed interface PendingSpaceWarning {
+sealed interface PendingSpaceWarning {
     val available: Long
     val needed: Long
 

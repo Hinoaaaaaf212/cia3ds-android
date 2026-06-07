@@ -23,6 +23,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -83,6 +84,8 @@ fun Cia3dsApp(incomingUri: MutableState<Uri?>) {
         Cia3dsTheme(pref = themePref.value) {
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                 var selected by rememberSaveable { mutableStateOf(NavTab.Decrypt) }
+                val appScope = rememberCoroutineScope()
+                val decryptState = remember { DecryptUiState() }
                 NavigationSuiteScaffold(
                     navigationSuiteItems = {
                         NavTab.entries.forEach { tab ->
@@ -96,7 +99,7 @@ fun Cia3dsApp(incomingUri: MutableState<Uri?>) {
                     },
                 ) {
                     when (selected) {
-                        NavTab.Decrypt -> DecryptScreen()
+                        NavTab.Decrypt -> DecryptScreen(decryptState, appScope)
                         NavTab.Settings -> SettingsScreen()
                         NavTab.About -> AboutScreen()
                     }
