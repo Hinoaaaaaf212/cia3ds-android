@@ -8,7 +8,7 @@ import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 
 sealed interface SpaceCheckResult {
-    data object Ok : SpaceCheckResult
+    data class Ok(val available: Long, val needed: Long) : SpaceCheckResult
     data class Low(val available: Long, val needed: Long) : SpaceCheckResult
     data object Unknown : SpaceCheckResult
 }
@@ -16,14 +16,16 @@ sealed interface SpaceCheckResult {
 private const val TAG = "cia3ds-space"
 
 const val SPACE_HEADROOM_MULTIPLIER = 2.5
+const val NCSD_SPACE_HEADROOM_MULTIPLIER = 4.0
 
 fun checkFreeSpace(
     ctx: Context,
     inputSizeBytes: Long,
     destinationUri: Uri?,
+    headroomMultiplier: Double = SPACE_HEADROOM_MULTIPLIER,
 ): SpaceCheckResult {
     if (inputSizeBytes <= 0L) return SpaceCheckResult.Unknown
-    val needed = (inputSizeBytes * SPACE_HEADROOM_MULTIPLIER).toLong()
+    val needed = (inputSizeBytes * headroomMultiplier).toLong()
 
     val cacheAvail = runCatching { StatFs(ctx.cacheDir.path).availableBytes }
         .onFailure { Log.w(TAG, "StatFs(cache) failed", it) }
@@ -35,7 +37,7 @@ fun checkFreeSpace(
         ?: return SpaceCheckResult.Unknown
 
     return if (limiting < needed) SpaceCheckResult.Low(limiting, needed)
-    else SpaceCheckResult.Ok
+    else SpaceCheckResult.Ok(limiting, needed)
 }
 
 private fun availableForUri(ctx: Context, uri: Uri): Long? {

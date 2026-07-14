@@ -13,7 +13,8 @@
     <string name="settings_output_naming_reset">Reset to default</string>
 
     <string name="space_low_title">Low free space</string>
-    <string name="space_low_message">About %1$s available, but the decrypt may need around %2$s. Continue anyway?</string>
+    <string name="space_low_message">About %1$s is available, but decrypt may need around %2$s. Free space or choose another destination before starting.</string>
+    <string name="space_low_error">Not enough free space before decrypt: input %1$s, estimated need %2$s, available %3$s.</string>
     <string name="space_low_continue">Continue</string>
     <string name="space_low_cancel">Cancel</string>
 
