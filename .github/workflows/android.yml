@@ -87,5 +87,6 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes/${{ github.ref_name }}.md
           files: |
             app/build/outputs/apk/release/cia3ds-*.apk
