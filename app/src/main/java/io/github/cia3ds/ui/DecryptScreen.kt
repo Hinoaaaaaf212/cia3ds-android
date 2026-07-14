@@ -75,7 +75,9 @@ import io.github.cia3ds.service.BatchSource
 import io.github.cia3ds.service.BatchState
 import io.github.cia3ds.service.DecryptionService
 import io.github.cia3ds.util.LogStream
+import io.github.cia3ds.util.NCSD_SPACE_HEADROOM_MULTIPLIER
 import io.github.cia3ds.util.SpaceCheckResult
+import io.github.cia3ds.util.SPACE_HEADROOM_MULTIPLIER
 import io.github.cia3ds.util.checkFreeSpace
 import io.github.cia3ds.util.formatBytes
 import kotlinx.coroutines.CancellationException
@@ -179,6 +181,40 @@ class DecryptUiState {
                     pendingTempFile = null
                 }
                 .getOrNull() ?: return@launch
+            val inputBytes = inputSizeForUri(ctx, inUri)
+            when (val space = checkFreeSpace(ctx, inputBytes, outUri, spaceHeadroomMultiplier(displayName, format))) {
+                is SpaceCheckResult.Low -> {
+                    val err = lowSpaceLogLine(inputBytes, space.needed, space.available)
+                    Log.e(TAG, err)
+                    logLines += "ERR: $err"
+                    LogStream.append("ERR: $err")
+                    LogStream.stop()
+                    isRunning = false
+                    runningJob = null
+                    lastResult = DecryptResult.Failure(
+                        ctx.getString(
+                            R.string.space_low_error,
+                            formatBytes(inputBytes),
+                            formatBytes(space.needed),
+                            formatBytes(space.available),
+                        )
+                    )
+                    status = (lastResult as DecryptResult.Failure).message
+                    pendingTempFile?.let { runCatching { it.delete() } }
+                    pendingTempFile = null
+                    return@launch
+                }
+                is SpaceCheckResult.Ok -> {
+                    val msg = lowSpaceLogLine(inputBytes, space.needed, space.available).replace("failed", "ok")
+                    Log.i(TAG, msg)
+                    LogStream.append(msg)
+                }
+                SpaceCheckResult.Unknown -> {
+                    val msg = "space preflight unknown: inputBytes=$inputBytes"
+                    Log.w(TAG, msg)
+                    LogStream.append(msg)
+                }
+            }
             try {
                 engine.decryptAsFlow(
                     input = inUri,
@@ -301,6 +337,7 @@ class DecryptUiState {
             val items = withContext(Dispatchers.IO) {
                 val outDir = DocumentFile.fromTreeUri(ctx, treeUri) ?: return@withContext null
                 buildBatchItemsForZip(
+                    ctx = ctx,
                     zipUri = zipUri,
                     zipName = zipName,
                     entryNames = entryNamesSnapshot,
@@ -453,8 +490,9 @@ fun DecryptScreen(state: DecryptUiState, appScope: CoroutineScope) {
                 pickedZipUri,
                 zipEntryNames.firstOrNull(),
             )
-            val check = checkFreeSpace(ctx, inputBytes, uri)
+            val check = checkFreeSpace(ctx, inputBytes, uri, spaceHeadroomMultiplier(singleFileName ?: zipEntryNames.firstOrNull() ?: "input", format))
             if (check is SpaceCheckResult.Low) {
+                Log.e(TAG, lowSpaceLogLine(inputBytes, check.needed, check.available))
                 pendingLowSpace = PendingSpaceWarning.Single(uri, check.available, check.needed)
             } else {
                 startSingleAfterOutputPicked(uri)
@@ -480,6 +518,7 @@ fun DecryptScreen(state: DecryptUiState, appScope: CoroutineScope) {
             val totalBytes = batchInputSizeBytes(ctx, zipUri, zipEntryNames)
             val check = checkFreeSpace(ctx, totalBytes, uri)
             if (check is SpaceCheckResult.Low) {
+                Log.e(TAG, lowSpaceLogLine(totalBytes, check.needed, check.available))
                 pendingLowSpace = PendingSpaceWarning.Batch(uri, check.available, check.needed)
             } else {
                 startBatchAfterTreePicked(uri)
@@ -777,19 +816,8 @@ fun DecryptScreen(state: DecryptUiState, appScope: CoroutineScope) {
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val w = pendingLowSpace
-                    pendingLowSpace = null
-                    when (w) {
-                        is PendingSpaceWarning.Single -> startSingleAfterOutputPicked(w.output)
-                        is PendingSpaceWarning.Batch -> startBatchAfterTreePicked(w.tree)
-                        null -> {}
-                    }
-                }) { Text(stringResource(R.string.space_low_continue)) }
-            },
-            dismissButton = {
                 TextButton(onClick = { pendingLowSpace = null }) {
-                    Text(stringResource(R.string.space_low_cancel))
+                    Text(stringResource(android.R.string.ok))
                 }
             },
         )
@@ -1116,6 +1144,7 @@ private fun extractZipEntryToTemp(
 }
 
 private fun buildBatchItemsForZip(
+    ctx: Context,
     zipUri: Uri,
     zipName: String,
     entryNames: List<String>,
@@ -1145,6 +1174,7 @@ private fun buildBatchItemsForZip(
                 source = BatchSource.ZipEntry(zipUri, entryName),
                 output = outFile.uri,
                 displayName = "$zipName / $entryFileName",
+                inputSizeBytes = zipEntrySize(ctx, zipUri, entryName),
             )
         )
     }
@@ -1221,6 +1251,24 @@ private fun zipEntrySize(ctx: Context, zipUri: Uri, entryName: String): Long {
     }
     return size
 }
+
+private fun inputSizeForUri(ctx: Context, uri: Uri): Long = when (uri.scheme) {
+    "file" -> uri.path?.let { File(it).length() } ?: 0L
+    else -> DocumentFile.fromSingleUri(ctx, uri)?.length()?.takeIf { it > 0 } ?: 0L
+}
+
+private fun spaceHeadroomMultiplier(name: String, format: OutputFormat): Double {
+    val lower = name.lowercase()
+    return if (lower.endsWith(".3ds") && format.useNcsdRebuild) {
+        NCSD_SPACE_HEADROOM_MULTIPLIER
+    } else {
+        SPACE_HEADROOM_MULTIPLIER
+    }
+}
+
+
+private fun lowSpaceLogLine(inputBytes: Long, neededBytes: Long, availableBytes: Long): String =
+    "space preflight failed: inputBytes=$inputBytes neededBytes=$neededBytes availableBytes=$availableBytes"
 
 private const val MAX_LOG_LINES = 50000
 private const val TAG = "cia3ds-ui"

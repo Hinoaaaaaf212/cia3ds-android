@@ -16,6 +16,10 @@ import io.github.cia3ds.jni.DecryptResult
 import io.github.cia3ds.jni.OutputFormat
 import io.github.cia3ds.ui.MainActivity
 import io.github.cia3ds.util.LogStream
+import io.github.cia3ds.util.NCSD_SPACE_HEADROOM_MULTIPLIER
+import io.github.cia3ds.util.SPACE_HEADROOM_MULTIPLIER
+import io.github.cia3ds.util.SpaceCheckResult
+import io.github.cia3ds.util.checkFreeSpace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -94,23 +98,72 @@ class DecryptionService : Service() {
                             Uri.fromFile(tmp)
                         }
                     }
-                    runCatching {
-                        engine.decrypt(
-                            input = inputUri,
-                            output = item.output,
-                            format = format,
-                            originalName = item.displayName,
-                            progressEmit = { pct, _ ->
-                                currentPercent = pct
-                                publish()
-                            },
-                            logEmit = { line ->
-                                currentLog += line
-                                if (currentLog.size > MAX_PER_FILE_LOG) currentLog.removeAt(0)
-                                publish()
-                            },
-                        )
-                    }.getOrElse { DecryptResult.Failure(it.message ?: "crash") }
+                    when (val space = checkFreeSpace(
+                        this@DecryptionService,
+                        item.inputSizeBytes,
+                        item.output,
+                        spaceHeadroomMultiplier(item.displayName, format),
+                    )) {
+                        is SpaceCheckResult.Low -> {
+                            val err = lowSpaceLogLine(item.inputSizeBytes, space.needed, space.available)
+                            android.util.Log.e(TAG, err)
+                            currentLog += "ERR: $err"
+                            LogStream.append("ERR: $err")
+                            publish()
+                            DecryptResult.Failure(
+                                getString(
+                                    R.string.space_low_error,
+                                    io.github.cia3ds.util.formatBytes(item.inputSizeBytes),
+                                    io.github.cia3ds.util.formatBytes(space.needed),
+                                    io.github.cia3ds.util.formatBytes(space.available),
+                                )
+                            )
+                        }
+                        is SpaceCheckResult.Ok -> {
+                            val msg = lowSpaceLogLine(item.inputSizeBytes, space.needed, space.available).replace("failed", "ok")
+                            android.util.Log.i(TAG, msg)
+                            LogStream.append(msg)
+                            runCatching {
+                                engine.decrypt(
+                                    input = inputUri,
+                                    output = item.output,
+                                    format = format,
+                                    originalName = item.displayName,
+                                    progressEmit = { pct, _ ->
+                                        currentPercent = pct
+                                        publish()
+                                    },
+                                    logEmit = { line ->
+                                        currentLog += line
+                                        if (currentLog.size > MAX_PER_FILE_LOG) currentLog.removeAt(0)
+                                        publish()
+                                    },
+                                )
+                            }.getOrElse { DecryptResult.Failure(it.message ?: "crash") }
+                        }
+                        SpaceCheckResult.Unknown -> {
+                            val msg = "space preflight unknown: inputBytes=${item.inputSizeBytes}"
+                            android.util.Log.w(TAG, msg)
+                            LogStream.append(msg)
+                            runCatching {
+                                engine.decrypt(
+                                    input = inputUri,
+                                    output = item.output,
+                                    format = format,
+                                    originalName = item.displayName,
+                                    progressEmit = { pct, _ ->
+                                        currentPercent = pct
+                                        publish()
+                                    },
+                                    logEmit = { line ->
+                                        currentLog += line
+                                        if (currentLog.size > MAX_PER_FILE_LOG) currentLog.removeAt(0)
+                                        publish()
+                                    },
+                                )
+                            }.getOrElse { DecryptResult.Failure(it.message ?: "crash") }
+                        }
+                    }
                 } finally {
                     tempFile?.let { tf ->
                         runCatching { tf.delete() }
@@ -259,6 +312,7 @@ data class BatchItem(
     val source: BatchSource,
     val output: Uri,
     val displayName: String,
+    val inputSizeBytes: Long = 0L,
 )
 
 sealed interface BatchSource {
@@ -288,4 +342,18 @@ sealed interface BatchState {
     ) : BatchState
 }
 
+private fun spaceHeadroomMultiplier(name: String, format: OutputFormat): Double {
+    val lower = name.lowercase()
+    return if (lower.endsWith(".3ds") && format.useNcsdRebuild) {
+        NCSD_SPACE_HEADROOM_MULTIPLIER
+    } else {
+        SPACE_HEADROOM_MULTIPLIER
+    }
+}
+
+
+private fun lowSpaceLogLine(inputBytes: Long, neededBytes: Long, availableBytes: Long): String =
+    "space preflight failed: inputBytes=$inputBytes neededBytes=$neededBytes availableBytes=$availableBytes"
+
 private const val MAX_PER_FILE_LOG = 50000
+private const val TAG = "cia3ds-service"
