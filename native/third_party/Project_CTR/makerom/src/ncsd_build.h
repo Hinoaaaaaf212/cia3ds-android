@@ -50,8 +50,10 @@ typedef struct
 		u8 *data;
 		u64 dataLen;
 		infile_type dataType;
+		bool fileBacked;
 	
 		char **path;
+		ncch_hdr header[CCI_MAX_CONTENT];
 	
 		bool active[CCI_MAX_CONTENT];
 		u64 dOffset[CCI_MAX_CONTENT];
