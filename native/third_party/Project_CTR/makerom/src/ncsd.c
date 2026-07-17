@@ -21,7 +21,7 @@ int ImportCciNcch(cci_settings *set);
 int ProcessNcchForCci(cci_settings *set);
 int GenCciHdr(cci_settings *set);
 int CheckRomConfig(cci_settings *set);
-void WriteCciDataToOutput(cci_settings *set);
+int WriteCciDataToOutput(cci_settings *set);
 
 int build_CCI(user_settings *usrset)
 {
@@ -65,7 +65,10 @@ int build_CCI(user_settings *usrset)
 		goto finish;
 	}
 	
-	WriteCciDataToOutput(set);
+	if(WriteCciDataToOutput(set)){
+		result = FAILED_TO_IMPORT_FILE;
+		goto finish;
+	}
 	
 finish:
 	FreeCciSettings(set);
@@ -83,6 +86,9 @@ void ImportCciSettings(cci_settings *set, user_settings *usrset)
 	
 	set->content.path = usrset->common.contentPath;
 	set->content.dSize = usrset->common.contentSize;
+	set->content.fileBacked = set->content.dataType == infile_ncch
+		&& set->content.data == NULL
+		&& set->content.path[0] != NULL;
 	
 	usrset->common.workingFile.buffer = NULL;
 	usrset->common.workingFile.size = 0;
@@ -113,6 +119,29 @@ void FreeCciSettings(cci_settings *set)
 
 int ImportNcchForCci(cci_settings *set)
 {
+	if(set->content.fileBacked){
+		for(int i = 0; i < CCI_MAX_CONTENT; i++){
+			if(!set->content.path[i] || !set->content.dSize[i]){
+				set->content.active[i] = false;
+				continue;
+			}
+			FILE *ncch = fopen(set->content.path[i], "rb");
+			if(!ncch){
+				fprintf(stderr,"[CCI ERROR] Failed to open content %d\n",i);
+				return FAILED_TO_OPEN_FILE;
+			}
+			ReadNcchHdr(&set->content.header[i], ncch);
+			fclose(ncch);
+			if(!IsNcch(NULL, (u8*)&set->content.header[i])
+				|| GetNcchSize(&set->content.header[i]) != set->content.dSize[i]){
+				fprintf(stderr,"[CCI ERROR] NCCH %d is corrupt\n",i);
+				return NCSD_INVALID_NCCH;
+			}
+			set->content.active[i] = true;
+		}
+		return set->content.active[0] ? 0 : NCSD_NO_NCCH0;
+	}
+
 	for(int i = 0; i < CCI_MAX_CONTENT; i++){
 		if(i == 0){
 			set->content.active[i] = true;
@@ -227,6 +256,20 @@ void GetTitleSaveSize(cci_settings *set)
 {
 	if(set->rsf->SystemControlInfo.SaveDataSize)
 		GetSaveDataSizeFromString(&set->romInfo.saveSize,set->rsf->SystemControlInfo.SaveDataSize,"CCI");
+	else if(set->content.fileBacked && !IsCfa(&set->content.header[0])){
+		ncch_info info;
+		memset(&info, 0, sizeof(info));
+		GetNcchInfo(&info, &set->content.header[0]);
+		if(info.exhdrSize >= sizeof(extended_hdr)){
+			FILE *fp = fopen(set->content.path[0], "rb");
+			if(fp){
+				extended_hdr exhdr;
+				ReadFile64(&exhdr, sizeof(exhdr), info.exhdrOffset, fp);
+				fclose(fp);
+				set->romInfo.saveSize = GetSaveDataSize_frm_exhdr(&exhdr);
+			}
+		}
+	}
 		
 	// Adjusting save size
 	if(set->romInfo.saveSize > 0 && set->romInfo.saveSize < (u64)(128*KB))
@@ -323,7 +366,9 @@ int ProcessNcchForCci(cci_settings *set)
 	
 	for(int i = 0; i < CCI_MAX_CONTENT; i++){
 		if(set->content.active[i]){
-			ncch = set->content.data + set->content.dOffset[i];
+			ncch = set->content.fileBacked
+				? (u8*)&set->content.header[i]
+				: set->content.data + set->content.dOffset[i];
 			if(!IsNcch(NULL,ncch)){
 				fprintf(stderr,"[CCI ERROR] NCCH %d is corrupt\n",i);
 				return NCSD_INVALID_NCCH;
@@ -339,6 +384,13 @@ int ProcessNcchForCci(cci_settings *set)
 				GetNewNcchIdForCci(titleId,srcId,i,set->options.tmdHdr);
 				if(ModifyNcchIds(ncch, titleId, srcId, set->keys))
 					return -1;
+				if(set->content.fileBacked){
+					FILE *fp = fopen(set->content.path[i], "r+b");
+					if(!fp) return FAILED_TO_OPEN_FILE;
+					bool wrote = fwrite(ncch, 1, sizeof(ncch_hdr), fp) == sizeof(ncch_hdr);
+					fclose(fp);
+					if(!wrote) return FAILED_TO_IMPORT_FILE;
+				}
 				if(set->options.verbose){
 					printf("[New Ids]\n");
 					memdump(stdout," > TitleId:   0x",hdr->titleId,8);
@@ -627,7 +679,7 @@ int CheckRomConfig(cci_settings *set)
 	return 0;
 }
 
-void WriteCciDataToOutput(cci_settings *set)
+int WriteCciDataToOutput(cci_settings *set)
 {
 	if (set->options.verbose) {
 		printf("[CCI] Writing header to file... ");
@@ -654,20 +706,43 @@ void WriteCciDataToOutput(cci_settings *set)
 	
 	// NCCH Partitions
 	u8 *ncch;
+	u8 *stream_buffer = set->content.fileBacked ? malloc(MB) : NULL;
+	if(set->content.fileBacked && !stream_buffer)
+		return MEM_ERROR;
 	for(int i = 0; i < CCI_MAX_CONTENT; i++){
 		if(set->content.active[i]){
 			if (set->options.verbose) {
 				printf("[CCI] Writing content %d to file... ", i);
 			}
 
-			ncch = set->content.data + set->content.dOffset[i];
-			WriteBuffer(ncch, set->content.dSize[i], set->content.cOffset[i], set->out);
+			if(set->content.fileBacked){
+				FILE *input = fopen(set->content.path[i], "rb");
+				if(!input){ free(stream_buffer); return FAILED_TO_OPEN_FILE; }
+				fseek_64(set->out, set->content.cOffset[i]);
+				u64 remaining = set->content.dSize[i];
+				while(remaining > 0){
+					size_t chunk = remaining > MB ? MB : (size_t)remaining;
+					if(fread(stream_buffer, 1, chunk, input) != chunk
+						|| fwrite(stream_buffer, 1, chunk, set->out) != chunk){
+						fclose(input);
+						free(stream_buffer);
+						return FAILED_TO_IMPORT_FILE;
+					}
+					remaining -= chunk;
+				}
+				fclose(input);
+			}
+			else{
+				ncch = set->content.data + set->content.dOffset[i];
+				WriteBuffer(ncch, set->content.dSize[i], set->content.cOffset[i], set->out);
+			}
 
 			if (set->options.verbose) {
 				printf("Done!\n");
 			}
 		}
 	}	
+	free(stream_buffer);
 	
 	// Cci Padding
 	if(set->options.padCci){
@@ -695,7 +770,7 @@ void WriteCciDataToOutput(cci_settings *set)
 		}
 	}
 	
-	return;
+	return 0;
 }
 
 bool IsCci(u8 *ncsd)
