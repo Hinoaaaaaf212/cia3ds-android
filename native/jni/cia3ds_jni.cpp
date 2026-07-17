@@ -645,7 +645,405 @@ bool read_ncch_regions(const std::string &part_path, NcchRegions &out) {
     if (!f) return false;
     unsigned char hdr[0x200];
     size_t got = fread(hdr, 1, sizeof(hdr), f);
-    fclose(f);…4027 tokens truncated…        sink.emit("Most common reasons:");
+    fclose(f);
+    if (got != sizeof(hdr)) return false;
+    auto rd_u32 = [&](size_t off) -> uint32_t {
+        return (uint32_t)hdr[off]
+             | ((uint32_t)hdr[off+1] << 8)
+             | ((uint32_t)hdr[off+2] << 16)
+             | ((uint32_t)hdr[off+3] << 24);
+    };
+    uint32_t exhdr_size_field = rd_u32(0x180);
+    uint32_t exefs_blk_off    = rd_u32(0x1A0);
+    uint32_t exefs_blk_size   = rd_u32(0x1A4);
+    uint32_t romfs_blk_off    = rd_u32(0x1B0);
+    uint32_t romfs_blk_size   = rd_u32(0x1B4);
+    out.exhdr_off  = 0x200;
+    out.exhdr_size = exhdr_size_field;
+    out.exefs_off  = (uint64_t)exefs_blk_off * 0x200ULL;
+    out.exefs_size = (uint64_t)exefs_blk_size * 0x200ULL;
+    out.romfs_off  = (uint64_t)romfs_blk_off * 0x200ULL;
+    out.romfs_size = (uint64_t)romfs_blk_size * 0x200ULL;
+    for (int i = 0; i < 16; ++i) {
+        snprintf(&out.hdr_hex_0[i*2], 3, "%02x", hdr[i]);
+        snprintf(&out.hdr_hex_100[i*2], 3, "%02x", hdr[0x100 + i]);
+    }
+    out.hdr_hex_0[32] = '\0';
+    out.hdr_hex_100[32] = '\0';
+    return true;
+}
+
+bool list_extracted_partitions(const std::string &dir_path,
+                               std::vector<Partition> &out) {
+    DIR *d = opendir(dir_path.c_str());
+    if (!d) return false;
+    struct dirent *e;
+    std::regex re(R"(^c\.([0-9a-fA-F]{4})\.([0-9a-fA-F]{8})$)");
+    while ((e = readdir(d)) != nullptr) {
+        std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        std::smatch m;
+        if (!std::regex_match(name, m, re)) continue;
+        Partition p;
+        p.path = dir_path + "/" + name;
+        p.slot = std::stoi(m[1].str(), nullptr, 16);
+        p.content_id = (uint32_t)std::stoul(m[2].str(), nullptr, 16);
+        out.push_back(std::move(p));
+    }
+    closedir(d);
+    std::sort(out.begin(), out.end(),
+              [](const Partition &a, const Partition &b) { return a.slot < b.slot; });
+    return !out.empty();
+}
+
+const char *kind_to_suffix(CiaKind k) {
+    switch (k) {
+        case CiaKind::Game: return "Game";
+        case CiaKind::Demo: return "Demo";
+        case CiaKind::System: return "System";
+        case CiaKind::DLC: return "DLC";
+        case CiaKind::Patch: return "Patch";
+        case CiaKind::TWL: return "TWL";
+        default: return "Unknown";
+    }
+}
+
+constexpr size_t kSmdhSize       = 0x36C0;
+constexpr size_t kSmdhTitleBase  = 0x08;
+constexpr size_t kSmdhTitleStride = 0x200;
+constexpr size_t kSmdhShortLen   = 0x40;
+constexpr size_t kSmdhLargeIcon  = 0x24C0;
+constexpr int    kIconDim        = 48;
+
+std::string smdh_title_utf8(const uint8_t *title_struct) {
+    std::string out;
+    for (size_t i = 0; i < kSmdhShortLen; ++i) {
+        uint32_t c = (uint32_t)title_struct[i * 2] | ((uint32_t)title_struct[i * 2 + 1] << 8);
+        if (c == 0) break;
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < kSmdhShortLen) {
+            uint32_t lo = (uint32_t)title_struct[(i + 1) * 2]
+                        | ((uint32_t)title_struct[(i + 1) * 2 + 1] << 8);
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+                ++i;
+            }
+        }
+        if (c < 0x80) {
+            out.push_back((char)c);
+        } else if (c < 0x800) {
+            out.push_back((char)(0xC0 | (c >> 6)));
+            out.push_back((char)(0x80 | (c & 0x3F)));
+        } else if (c < 0x10000) {
+            out.push_back((char)(0xE0 | (c >> 12)));
+            out.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+            out.push_back((char)(0x80 | (c & 0x3F)));
+        } else {
+            out.push_back((char)(0xF0 | (c >> 18)));
+            out.push_back((char)(0x80 | ((c >> 12) & 0x3F)));
+            out.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+            out.push_back((char)(0x80 | (c & 0x3F)));
+        }
+    }
+    while (!out.empty() && (out.back() == ' ' || out.back() == '\n' || out.back() == '\r'))
+        out.pop_back();
+    return out;
+}
+
+std::string smdh_best_title(const uint8_t *smdh) {
+    static const int order[] = {1, 0, 2, 3, 4, 5, 8, 9, 6, 7, 10, 11};
+    for (int lang : order) {
+        const uint8_t *t = smdh + kSmdhTitleBase + (size_t)lang * kSmdhTitleStride;
+        std::string s = smdh_title_utf8(t);
+        if (!s.empty()) return s;
+    }
+    return "";
+}
+
+void smdh_decode_large_icon(const uint8_t *icon, uint8_t *out) {
+    constexpr int tile = 8;
+    constexpr int tiles_per_row = kIconDim / tile;
+    for (int ty = 0; ty < tiles_per_row; ++ty) {
+        for (int tx = 0; tx < tiles_per_row; ++tx) {
+            for (int py = 0; py < tile; ++py) {
+                for (int px = 0; px < tile; ++px) {
+                    int morton = 0;
+                    for (int b = 0; b < 3; ++b) {
+                        morton |= ((px >> b) & 1) << (2 * b);
+                        morton |= ((py >> b) & 1) << (2 * b + 1);
+                    }
+                    int tile_index = (ty * tiles_per_row + tx) * (tile * tile) + morton;
+                    uint16_t pix = (uint16_t)icon[tile_index * 2]
+                                 | ((uint16_t)icon[tile_index * 2 + 1] << 8);
+                    int r5 = (pix >> 11) & 0x1F;
+                    int g6 = (pix >> 5) & 0x3F;
+                    int b5 = pix & 0x1F;
+                    uint8_t r = (uint8_t)((r5 << 3) | (r5 >> 2));
+                    uint8_t g = (uint8_t)((g6 << 2) | (g6 >> 4));
+                    uint8_t b = (uint8_t)((b5 << 3) | (b5 >> 2));
+                    int ox = tx * tile + px;
+                    int oy = ty * tile + py;
+                    uint8_t *p = out + ((size_t)oy * kIconDim + ox) * 4;
+                    p[0] = r; p[1] = g; p[2] = b; p[3] = 0xFF;
+                }
+            }
+        }
+    }
+}
+
+bool parse_exefs_icon(const std::string &exefs_path,
+                      std::string &name_out,
+                      std::vector<uint8_t> &icon_out) {
+    int fd = open(exefs_path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    uint8_t header[0x200];
+    bool ok = pread_full_at(fd, header, sizeof(header), 0);
+    if (!ok) { close(fd); return false; }
+    uint64_t icon_off = 0, icon_size = 0;
+    bool found = false;
+    for (int i = 0; i < 8; ++i) {
+        const uint8_t *e = header + i * 0x10;
+        char nm[9];
+        memcpy(nm, e, 8);
+        nm[8] = '\0';
+        if (strncmp(nm, "icon", 8) == 0) {
+            icon_off  = rd_u32_le_at(e + 0x08);
+            icon_size = rd_u32_le_at(e + 0x0C);
+            found = true;
+            break;
+        }
+    }
+    if (!found || icon_size < kSmdhSize) { close(fd); return false; }
+    std::vector<uint8_t> smdh(kSmdhSize);
+    ok = pread_full_at(fd, smdh.data(), kSmdhSize, (off_t)(0x200 + icon_off));
+    close(fd);
+    if (!ok) return false;
+    if (memcmp(smdh.data(), "SMDH", 4) != 0) return false;
+    name_out = smdh_best_title(smdh.data());
+    icon_out.assign((size_t)kIconDim * kIconDim * 4, 0);
+    smdh_decode_large_icon(smdh.data() + kSmdhLargeIcon, icon_out.data());
+    return true;
+}
+
+} // namespace
+
+extern "C" JNIEXPORT jint JNICALL
+Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
+    JNIEnv *env, jobject /*thiz*/,
+    jint inFd, jint outFd,
+    jstring jSeedDb, jstring jTmpDir,
+    jstring jOriginalName, jboolean wantCci,
+    jobject progressCallback,
+    jobject logCallback,
+    jobject seedFetcherCallback) {
+
+    const char *seeddb_c = env->GetStringUTFChars(jSeedDb, nullptr);
+    const char *tmp_c    = env->GetStringUTFChars(jTmpDir, nullptr);
+    const char *orig_c   = env->GetStringUTFChars(jOriginalName, nullptr);
+    std::string seeddb_path = seeddb_c;
+    std::string tmp_dir = tmp_c;
+    std::string orig_name = orig_c;
+    env->ReleaseStringUTFChars(jSeedDb, seeddb_c);
+    env->ReleaseStringUTFChars(jTmpDir, tmp_c);
+    env->ReleaseStringUTFChars(jOriginalName, orig_c);
+
+    ProgressReporter progress{env, progressCallback, nullptr};
+    if (progressCallback) {
+        jclass cls = env->GetObjectClass(progressCallback);
+        progress.onProgress = env->GetMethodID(cls, "onProgress", "(ILjava/lang/String;)V");
+        env->DeleteLocalRef(cls);
+    }
+    LogSink sink{env, logCallback, nullptr};
+    if (logCallback) {
+        jclass cls = env->GetObjectClass(logCallback);
+        sink.onLine = env->GetMethodID(cls, "onLine", "(Ljava/lang/String;)V");
+        env->DeleteLocalRef(cls);
+    }
+    SeedFetcher seedFetcher{env, seedFetcherCallback, nullptr};
+    if (seedFetcherCallback) {
+        jclass cls = env->GetObjectClass(seedFetcherCallback);
+        seedFetcher.onFetch = env->GetMethodID(cls, "onFetch", "(Ljava/lang/String;)[B");
+        env->DeleteLocalRef(cls);
+    }
+
+    struct LocalFrameGuard {
+        JNIEnv *e;
+        LocalFrameGuard(JNIEnv *e, jint cap) : e(e) { e->PushLocalFrame(cap); }
+        ~LocalFrameGuard() { e->PopLocalFrame(nullptr); }
+    } _frame{env, 64};
+
+    sink.emitf("== cia3ds: decrypt %s (wantCci=%d) ==",
+               orig_name.c_str(), (int)wantCci);
+    sink.emitf("aes-backend: %s",
+               cia3ds_aes_arm_available() ? "ARMv8 crypto" : "software");
+
+    g_cancel.store(false, std::memory_order_relaxed);
+
+    auto cancelled = [&]() -> bool {
+        return g_cancel.load(std::memory_order_relaxed);
+    };
+
+    std::string work_for_cleanup;
+    auto bail_if_cancelled = [&]() -> bool {
+        if (!cancelled()) return false;
+        sink.emit("Cancelled by user.");
+        if (!work_for_cleanup.empty()) rmtree(work_for_cleanup);
+        return true;
+    };
+
+    auto emit_workdir_help = [&]() {
+        sink.emit("Most common reasons:");
+        sink.emit("  - The device is out of free storage.");
+        sink.emit("  - The app's cache directory is unwritable.");
+        sink.emit("Free up space (or clear the app's cache from Android settings) and try again.");
+    };
+
+    if (!make_dir_p(tmp_dir)) {
+        sink.emitf("ERR: cannot create tmp dir %s", tmp_dir.c_str());
+        emit_workdir_help();
+        return 1;
+    }
+    std::string work = tmp_dir + "/work";
+    rmtree(work);
+    if (!make_dir_p(work)) {
+        sink.emitf("ERR: cannot create work dir %s", work.c_str());
+        emit_workdir_help();
+        return 1;
+    }
+    work_for_cleanup = work;
+
+    std::string input_path  = work + "/input.bin";
+    std::string output_path = work + "/output.bin";
+    std::string contents_dir = work + "/contents";
+    std::string log_path = work + "/tool.log";
+    if (!make_dir_p(contents_dir)) {
+        sink.emitf("ERR: cannot create contents dir %s", contents_dir.c_str());
+        emit_workdir_help();
+        return 1;
+    }
+
+    progress.post(2, "Reading metadata");
+    SniffedMetadata sniffed;
+    bool sniffed_ok = sniff_metadata_from_fd(inFd, sniffed);
+
+    CiaInfo info;
+    if (sniffed_ok) {
+        info.title_id = sniffed.title_id;
+        info.title_version = sniffed.title_version;
+        info.already_decrypted = sniffed.already_decrypted;
+        info.is_3ds = sniffed.is_3ds;
+        info.kind = classify_kind(info.title_id);
+        info.info_rc = 0;
+        sink.emitf("metadata (sniff): title=%s version=%s kind=%d already=%d is_3ds=%d",
+                   info.title_id.c_str(), info.title_version.c_str(),
+                   (int)info.kind, (int)info.already_decrypted, (int)info.is_3ds);
+        sink.emitf("META: title_id=%s", info.title_id.c_str());
+        sink.emitf("META: kind=%s", kind_to_suffix(info.kind));
+        sink.emitf("META: version=%s",
+                   info.title_version.empty() ? "0" : info.title_version.c_str());
+    }
+
+    if (info.already_decrypted) {
+        progress.post(100, "Already decrypted; nothing to do.");
+        sink.emit("input is already decrypted; copying input to output");
+        if (!copy_fd_to_fd(inFd, outFd)) {
+            sink.emit("ERR: copy of input to output fd failed.");
+            sink.emit("The file is already decrypted and the engine tried to copy it to");
+            sink.emit("the output you picked, but the write failed.");
+            sink.emit("Most common reasons:");
+            sink.emit("  - The destination ran out of free storage.");
+            sink.emit("  - The destination folder is no longer writable.");
+            sink.emit("Free up space and pick the output again.");
+            return 4;
+        }
+        rmtree(work);
+        return 10;
+    }
+
+    struct FdGuard {
+        int fd = -1;
+        ~FdGuard() { if (fd >= 0) ::close(fd); }
+    } fd_guard;
+
+    std::string input_path_for_tools;
+    {
+        int dup_fd = -1;
+        std::string p = try_fd_path(inFd, dup_fd);
+        if (!p.empty()) {
+            fd_guard.fd = dup_fd;
+            input_path_for_tools = p;
+            sink.emitf("staging: passing source fd directly via %s (no copy)",
+                       p.c_str());
+        } else {
+            progress.post(5, "Staging input");
+            if (!copy_fd_to_path(inFd, input_path)) {
+                sink.emitf("ERR: failed to stage input fd to %s",
+                           input_path.c_str());
+                sink.emit("Most common reasons:");
+                sink.emit("  - The device ran out of free storage while copying.");
+                sink.emit("  - The source file is on a removable drive that was disconnected.");
+                sink.emit("  - The source file is no longer reachable through the file picker.");
+                sink.emit("Free up space and re-pick the input file.");
+                return 2;
+            }
+            input_path_for_tools = input_path;
+            struct stat st;
+            if (stat(input_path.c_str(), &st) == 0) {
+                sink.emitf("staged input: %lld bytes",
+                           (long long)st.st_size);
+            }
+        }
+    }
+
+    if (bail_if_cancelled()) return 13;
+    if (!sniffed_ok) {
+        progress.post(10, "Reading metadata (fallback)");
+        info = run_ctrtool_info(input_path_for_tools, seeddb_path, log_path, sink);
+        sink.emitf("metadata: title=%s version=%s kind=%d already=%d is_3ds=%d",
+                   info.title_id.empty() ? "(unknown)" : info.title_id.c_str(),
+                   info.title_version.c_str(),
+                   (int)info.kind, (int)info.already_decrypted, (int)info.is_3ds);
+        sink.emitf("META: title_id=%s",
+                   info.title_id.empty() ? "" : info.title_id.c_str());
+        sink.emitf("META: kind=%s", kind_to_suffix(info.kind));
+        sink.emitf("META: version=%s",
+                   info.title_version.empty() ? "0" : info.title_version.c_str());
+
+        if (info.info_rc != 0 && info.title_id.empty()) {
+            sink.emit("ERR: ctrtool could not identify this file as a CIA or 3DS.");
+            sink.emit("Most common reasons:");
+            sink.emit("  - The file is already decrypted (re-running an output is a no-op).");
+            sink.emit("  - The file is not a Nintendo 3DS CIA/3DS at all.");
+            sink.emit("  - The file is corrupt or truncated.");
+            sink.emit("Pick a still-encrypted .cia or .3ds and try again.");
+            rmtree(work);
+            return 12;
+        }
+    }
+
+    std::string cdn_seed_hex;
+    if (!info.title_id.empty() && seedFetcherCallback) {
+        sink.emitf("seed-fetch: querying CDN for %s", info.title_id.c_str());
+        std::string raw = seedFetcher.fetch(info.title_id);
+        if (raw.size() == 16) {
+            char buf[33];
+            for (size_t i = 0; i < 16; ++i) {
+                snprintf(buf + i * 2, 3, "%02x", (unsigned char)raw[i]);
+            }
+            cdn_seed_hex = buf;
+            sink.emitf("seed-fetch: using CDN seed %s", cdn_seed_hex.c_str());
+        } else {
+            sink.emit("seed-fetch: CDN miss, falling back to bundled seeddb.bin");
+        }
+    }
+
+    if (info.already_decrypted) {
+        progress.post(100, "Already decrypted; nothing to do.");
+        sink.emit("input is already decrypted; copying input to output");
+        if (!copy_path_to_fd(input_path_for_tools, outFd)) {
+            sink.emit("ERR: copy of input to output fd failed.");
+            sink.emit("The file is already decrypted and the engine tried to copy it to");
+            sink.emit("the output you picked, but the write failed.");
+            sink.emit("Most common reasons:");
             sink.emit("  - The destination ran out of free storage.");
             sink.emit("  - The destination folder is no longer writable.");
             sink.emit("Free up space and pick the output again.");
