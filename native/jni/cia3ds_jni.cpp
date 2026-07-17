@@ -1296,25 +1296,30 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     }
 
     if (bail_if_cancelled()) return 13;
-    progress.post(75, "Rebuilding CIA");
+    bool build_ncsd = wantCci && info.kind == CiaKind::Game;
+    progress.post(75, build_ncsd ? "Rebuilding 3DS" : "Rebuilding CIA");
     {
         Argv argv({
             "makerom",
-            "-f", "cia",
+            "-f", build_ncsd ? "cci" : "cia",
             "-ignoresign",
             "-target", "p",
             "-o", output_path,
         });
-        if (info.kind == CiaKind::DLC) {
+        if (!build_ncsd && info.kind == CiaKind::DLC) {
             argv.push("-dlc");
         }
         for (auto &p : partitions) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%d:0x%08x", p.slot, p.content_id);
             argv.push("-i");
-            argv.push(p.path + ":" + buf);
+            if (build_ncsd) {
+                argv.push(p.path + ":" + std::to_string(p.slot));
+            } else {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d:0x%08x", p.slot, p.content_id);
+                argv.push(p.path + ":" + buf);
+            }
         }
-        if (!info.title_version.empty()) {
+        if (!build_ncsd && !info.title_version.empty()) {
             argv.push("-ver");
             argv.push(info.title_version);
         }
@@ -1325,9 +1330,11 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
         int rc = makerom_main(argv.size(), argv.data());
         std::string out = cap.read();
         sink.emitBlock(out);
-        sink.emitf("[makerom rebuild exit=%d]", rc);
+        sink.emitf("[makerom streaming %s rebuild exit=%d]",
+                   build_ncsd ? "NCSD" : "CIA", rc);
         if (rc != 0) {
-            sink.emit("ERR: makerom failed to rebuild the CIA from the decrypted partitions.");
+            sink.emitf("ERR: makerom failed to rebuild the %s from the decrypted partitions.",
+                       build_ncsd ? "3DS/CCI" : "CIA");
             sink.emit("Most common reasons:");
             sink.emit("  - The decrypted partitions on disk got corrupted (often disk full).");
             sink.emit("  - The title's metadata (kind/version) is in a shape makerom rejects.");
@@ -1342,34 +1349,14 @@ Java_io_github_cia3ds_jni_Cia3ds_nativeDecryptCia(
     {
         struct stat st;
         if (stat(output_path.c_str(), &st) == 0) {
-            sink.emitf("rebuilt CIA: %lld bytes", (long long)st.st_size);
+            sink.emitf("rebuilt %s: %lld bytes",
+                       build_ncsd ? "NCSD" : "CIA", (long long)st.st_size);
         }
     }
 
     std::string final_input = output_path;
-    bool produced_ncsd = false;
-    if (wantCci && info.kind == CiaKind::Game) {
-        if (bail_if_cancelled()) return 13;
-        std::string cci_path = work + "/output.cci";
-        sink.emitf("$ makerom -ciatocci %s -o %s",
-                   output_path.c_str(), cci_path.c_str());
-        StdoutCapture cap(log_path);
-        Argv argv({
-            "makerom",
-            "-ciatocci", output_path,
-            "-o", cci_path,
-        });
-        int rc = makerom_main(argv.size(), argv.data());
-        std::string out = cap.read();
-        sink.emitBlock(out);
-        sink.emitf("[makerom -ciatocci exit=%d]", rc);
-        if (rc != 0) {
-            sink.emit("WARN: ciatocci failed; keeping CIA");
-        } else {
-            final_input = cci_path;
-            produced_ncsd = true;
-        }
-    } else if (wantCci) {
+    bool produced_ncsd = build_ncsd;
+    if (wantCci && !build_ncsd) {
         sink.emitf("WARN: %s is not a Game title; keeping CIA",
                    kind_to_suffix(info.kind));
     }
