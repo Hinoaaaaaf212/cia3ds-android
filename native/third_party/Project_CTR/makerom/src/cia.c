@@ -13,6 +13,8 @@
 #include "titleid.h"
 #include "certs.h"
 
+#include <mbedtls/sha256.h>
+
 const int CIA_ALIGN_SIZE = 0x40;
 const int CIA_CONTENT_ALIGN = 0x10;
 
@@ -22,6 +24,7 @@ int GetCiaSettings(cia_settings *ciaset, user_settings *usrset);
 
 int GetSettingsFromUsrset(cia_settings *ciaset, user_settings *usrset);
 int GetSettingsFromNcch0(cia_settings *ciaset, u32 ncch0_offset);
+int GetSettingsFromNcch0File(cia_settings *ciaset, const char *path);
 int GetTmdDataFromNcch(cia_settings *ciaset, u8 *ncch, ncch_info *ncch_ctx, u8 *key);
 int GetMetaRegion(cia_settings *ciaset, u8 *ncch, ncch_info *ncch_ctx, u8 *key);
 int ProcessContentFiles(cia_settings *ciaset, user_settings *usrset);
@@ -31,8 +34,8 @@ int GetSettingsFromCci(cia_settings *ciaset);
 
 u16 SetupVersion(u16 major, u16 minor, u16 micro);
 
-void GetContentHashes(cia_settings *ciaset);
-void EncryptContent(cia_settings *ciaset);
+int GetContentHashes(cia_settings *ciaset);
+int EncryptContent(cia_settings *ciaset);
 
 int BuildCiaCertChain(cia_settings *ciaset);
 int BuildCiaHdr(cia_settings *ciaset);
@@ -133,11 +136,16 @@ int GetCiaSettings(cia_settings *ciaset, user_settings *usrset)
 	result = GetSettingsFromUsrset(ciaset,usrset);
 
 	if(usrset->common.workingFileType == infile_ncch){
-		if((result = GetSettingsFromNcch0(ciaset,0)) != 0) 
+		if(ciaset->content.fileBacked)
+			result = GetSettingsFromNcch0File(ciaset, ciaset->content.filePath[0]);
+		else
+			result = GetSettingsFromNcch0(ciaset,0);
+		if(result != 0)
 			return result;
 		if((result = ProcessContentFiles(ciaset,usrset)) != 0) 
 			return result;
-		if((result = ImportNcchContent(ciaset,usrset)) != 0) 
+		if(!ciaset->content.fileBacked
+			&& (result = ImportNcchContent(ciaset,usrset)) != 0)
 			return result;
 	}
 
@@ -151,10 +159,11 @@ int GetCiaSettings(cia_settings *ciaset, user_settings *usrset)
 			return result;
 	}
 	
-	GetContentHashes(ciaset);
+	if((result = GetContentHashes(ciaset)) != 0)
+		return result;
 
-	if(ciaset->content.encryptCia)
-		EncryptContent(ciaset);
+	if(ciaset->content.encryptCia && (result = EncryptContent(ciaset)) != 0)
+		return result;
 
 	return 0;
 }
@@ -169,6 +178,11 @@ int GetSettingsFromUsrset(cia_settings *ciaset, user_settings *usrset)
 	usrset->common.workingFile.buffer = NULL;
 	usrset->common.workingFile.size = 0;
 	ciaset->content.includeUpdateNcch = usrset->cia.includeUpdateNcch;
+	ciaset->content.fileBacked = usrset->common.workingFileType == infile_ncch
+		&& usrset->common.workingFile.buffer == NULL
+		&& usrset->common.contentPath[0] != NULL;
+	if(ciaset->content.fileBacked)
+		ciaset->content.filePath[0] = usrset->common.contentPath[0];
 	ciaset->verbose = usrset->common.verbose;
 	
 	ciaset->tmd.titleType = TYPE_CTR;
@@ -222,6 +236,55 @@ int GetSettingsFromUsrset(cia_settings *ciaset, user_settings *usrset)
 	ciaset->tmd.accessRights = 0;
 	GenCertChildIssuer(ciaset->tmd.issuer,ciaset->keys->certs.cpCert);
 	return 0;
+}
+
+int GetSettingsFromNcch0File(cia_settings *ciaset, const char *path)
+{
+	FILE *fp = fopen(path, "rb");
+	if(!fp){
+		fprintf(stderr,"[CIA ERROR] Failed to open Content 0: %s\n",path);
+		return FAILED_TO_OPEN_FILE;
+	}
+
+	ncch_hdr hdr;
+	ReadNcchHdr(&hdr, fp);
+	u64 file_size = GetFileSize64(path);
+	if(!IsNcch(NULL,(u8*)&hdr) || GetNcchSize(&hdr) != file_size){
+		fprintf(stderr,"[CIA ERROR] Content 0 is corrupt\n");
+		fclose(fp);
+		return CIA_INVALID_NCCH0;
+	}
+
+	ncch_info info;
+	memset(&info, 0, sizeof(info));
+	GetNcchInfo(&info, &hdr);
+	u64 prefix_size = sizeof(ncch_hdr);
+	u64 exhdr_end = info.acexOffset + info.acexSize;
+	u64 exefs_end = info.exefsOffset + info.exefsSize;
+	if(exhdr_end > prefix_size) prefix_size = exhdr_end;
+	if(exefs_end > prefix_size) prefix_size = exefs_end;
+	if(prefix_size > file_size || prefix_size > (u64)SIZE_MAX){
+		fprintf(stderr,"[CIA ERROR] Content 0 has invalid section bounds\n");
+		fclose(fp);
+		return CIA_INVALID_NCCH0;
+	}
+
+	u8 *prefix = malloc((size_t)prefix_size);
+	if(!prefix){
+		fprintf(stderr,"[CIA ERROR] Not enough memory for NCCH metadata\n");
+		fclose(fp);
+		return MEM_ERROR;
+	}
+	ReadFile64(prefix, prefix_size, 0, fp);
+	fclose(fp);
+
+	ciaset->ciaSections.content.buffer = prefix;
+	ciaset->ciaSections.content.size = prefix_size;
+	int result = GetSettingsFromNcch0(ciaset, 0);
+	free(prefix);
+	ciaset->ciaSections.content.buffer = NULL;
+	ciaset->ciaSections.content.size = 0;
+	return result;
 }
 
 int GetSettingsFromNcch0(cia_settings *ciaset, u32 ncch0_offset)
@@ -410,6 +473,8 @@ int ProcessContentFiles(cia_settings *ciaset, user_settings *usrset)
 
 			// get content file size
 			ciaset->content.fileSize[j] = GetFileSize64(usrset->common.contentPath[i]);
+			if(ciaset->content.fileBacked)
+				ciaset->content.filePath[j] = usrset->common.contentPath[i];
 			
 			// get content id
 			if(usrset->cia.contentId[i] > MAX_U32)
@@ -602,19 +667,64 @@ u16 SetupVersion(u16 major, u16 minor, u16 micro)
 	return (((major << 10) & 0xFC00) | ((minor << 4) & 0x3F0) | (micro & 0xf));
 }
 
-void GetContentHashes(cia_settings *ciaset)
+static int HashContentFile(const char *path, u64 size, u8 hash[0x20])
+{
+	FILE *fp = fopen(path, "rb");
+	if(!fp) return FAILED_TO_OPEN_FILE;
+	u8 *buffer = malloc(MB);
+	if(!buffer){
+		fclose(fp);
+		return MEM_ERROR;
+	}
+	mbedtls_sha256_context ctx;
+	mbedtls_sha256_init(&ctx);
+	int result = mbedtls_sha256_starts_ret(&ctx, 0);
+	u64 remaining = size;
+	while(result == 0 && remaining > 0){
+		size_t chunk = remaining > MB ? MB : (size_t)remaining;
+		if(fread(buffer, 1, chunk, fp) != chunk){
+			result = FAILED_TO_IMPORT_FILE;
+			break;
+		}
+		result = mbedtls_sha256_update_ret(&ctx, buffer, chunk);
+		remaining -= chunk;
+	}
+	if(result == 0)
+		result = mbedtls_sha256_finish_ret(&ctx, hash);
+	mbedtls_sha256_free(&ctx);
+	free(buffer);
+	fclose(fp);
+	return result;
+}
+
+int GetContentHashes(cia_settings *ciaset)
 {
 	for (int i = 0; i < ciaset->content.count; i++) {
 		if (ciaset->verbose)
 			printf("[CIA] Hashing content %d... ", i);
-		ShaCalc(ciaset->ciaSections.content.buffer + ciaset->content.offset[i], ciaset->content.size[i], ciaset->content.hash[i], CTR_SHA_256);
+		int result;
+		if(ciaset->content.fileBacked)
+			result = HashContentFile(ciaset->content.filePath[i], ciaset->content.size[i], ciaset->content.hash[i]);
+		else{
+			ShaCalc(ciaset->ciaSections.content.buffer + ciaset->content.offset[i], ciaset->content.size[i], ciaset->content.hash[i], CTR_SHA_256);
+			result = 0;
+		}
+		if(result != 0){
+			fprintf(stderr,"[CIA ERROR] Failed to hash content %d\n",i);
+			return result;
+		}
 		if (ciaset->verbose)
 			printf("Done!\n");
 	}
+	return 0;
 }
 
-void EncryptContent(cia_settings *ciaset)
+int EncryptContent(cia_settings *ciaset)
 {
+	if(ciaset->content.fileBacked){
+		fprintf(stderr,"[CIA ERROR] Streaming encrypted CIA output is unsupported\n");
+		return FAILED_TO_IMPORT_FILE;
+	}
 	for(int i = 0; i < ciaset->content.count; i++){
 		if (ciaset->verbose)
 			printf("[CIA] Encrypting content %d... ", i);
@@ -626,6 +736,7 @@ void EncryptContent(cia_settings *ciaset)
 		if (ciaset->verbose)
 			printf("Done!\n");
 	}
+	return 0;
 }
 
 int BuildCiaCertChain(cia_settings *ciaset)
@@ -689,7 +800,30 @@ int WriteCiaToFile(cia_settings *ciaset)
 	WriteBuffer(ciaset->ciaSections.certChain.buffer,ciaset->ciaSections.certChain.size,ciaset->ciaSections.certChainOffset,ciaset->out);
 	WriteBuffer(ciaset->ciaSections.tik.buffer,ciaset->ciaSections.tik.size,ciaset->ciaSections.tikOffset,ciaset->out);
 	WriteBuffer(ciaset->ciaSections.tmd.buffer,ciaset->ciaSections.tmd.size,ciaset->ciaSections.tmdOffset,ciaset->out);
-	WriteBuffer(ciaset->ciaSections.content.buffer,ciaset->ciaSections.content.size,ciaset->ciaSections.contentOffset,ciaset->out);
+	if(ciaset->content.fileBacked){
+		u8 *buffer = malloc(MB);
+		if(!buffer) return MEM_ERROR;
+		for(int i = 0; i < ciaset->content.count; i++){
+			FILE *input = fopen(ciaset->content.filePath[i], "rb");
+			if(!input){ free(buffer); return FAILED_TO_OPEN_FILE; }
+			fseek_64(ciaset->out, ciaset->ciaSections.contentOffset + ciaset->content.offset[i]);
+			u64 remaining = ciaset->content.size[i];
+			while(remaining > 0){
+				size_t chunk = remaining > MB ? MB : (size_t)remaining;
+				if(fread(buffer, 1, chunk, input) != chunk
+					|| fwrite(buffer, 1, chunk, ciaset->out) != chunk){
+					fclose(input);
+					free(buffer);
+					return FAILED_TO_IMPORT_FILE;
+				}
+				remaining -= chunk;
+			}
+			fclose(input);
+		}
+		free(buffer);
+	}
+	else
+		WriteBuffer(ciaset->ciaSections.content.buffer,ciaset->ciaSections.content.size,ciaset->ciaSections.contentOffset,ciaset->out);
 	WriteBuffer(ciaset->ciaSections.meta.buffer,ciaset->ciaSections.meta.size,ciaset->ciaSections.metaOffset,ciaset->out);
 
 	if (ciaset->verbose) {
