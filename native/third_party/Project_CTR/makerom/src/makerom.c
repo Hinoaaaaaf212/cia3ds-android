@@ -25,8 +25,14 @@ int main(int argc, char *argv[])
 	if((result = GetRsfSettings(set)) < 0) 
 		goto finish;
 
+	// CIA/CCI output can stream imported NCCH files directly from disk. Avoid
+	// loading content 0 (often several gigabytes) into the process heap.
+	bool stream_ncch = !set->ncch.buildNcch0
+		&& set->common.workingFileType == infile_ncch
+		&& (set->common.outFormat == CIA || set->common.outFormat == CCI);
+
 	// Setup Content 0
-	if(!set->ncch.buildNcch0){ // Import Content
+	if(!set->ncch.buildNcch0 && !stream_ncch){ // Import Content
 		if(set->common.workingFileType == infile_ncch){
 			if(!AssertFile(set->common.contentPath[0])){
 				fprintf(stderr,"[MAKEROM ERROR] Failed to open Content 0: %s\n",set->common.contentPath[0]); 
