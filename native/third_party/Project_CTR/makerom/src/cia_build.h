@@ -65,8 +65,10 @@ typedef struct
 		bool IsDlc;
 		bool encryptCia;
 		bool includeUpdateNcch; // for cci -> cia conversions
+		bool fileBacked;
 
 		bool keyFound;
+		const char *filePath[CIA_MAX_CONTENT];
 
 		u64 fileSize[CIA_MAX_CONTENT];
 
