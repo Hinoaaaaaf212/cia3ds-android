@@ -184,7 +184,9 @@ void SetNcchHeader(cardinfo_hdr *hdr, cci_settings *set)
 	u8 *ncch;
 	ncch_hdr *ncchHdr;
 	
-	ncch = set->content.data + set->content.dOffset[0];
+	ncch = set->content.fileBacked
+		? (u8*)&set->content.header[0]
+		: set->content.data + set->content.dOffset[0];
 	ncchHdr = (ncch_hdr*)ncch;
 	
 	memcpy(hdr->ncch0Hdr,GetNcchHdrData(ncchHdr),GetNcchHdrDataLen(ncchHdr));
@@ -197,7 +199,9 @@ void SetCardSeedData(cardinfo_hdr *hdr, devcardinfo_hdr *devhdr, cci_settings *s
 	u8 *ncch;
 	ncch_hdr *ncchHdr;
 
-	ncch = set->content.data + set->content.dOffset[0];
+	ncch = set->content.fileBacked
+		? (u8*)&set->content.header[0]
+		: set->content.data + set->content.dOffset[0];
 	ncchHdr = (ncch_hdr*)ncch;
 
 	/*
