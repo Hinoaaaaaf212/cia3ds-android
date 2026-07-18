@@ -70,7 +70,7 @@ int main(int argc, char *argv[])
 			fclose(fp);
 		}
 	}
-	else{// Build Content 0
+	else if(set->ncch.buildNcch0){// Build Content 0
 		result = build_NCCH(set);
 		if(result < 0) { 
 			//fprintf(stderr,"[ERROR] %s generation failed\n",set->build_ncch_type == CXI? "CXI" : "CFA"); 
@@ -78,6 +78,7 @@ int main(int argc, char *argv[])
 			goto finish; 
 		}	
 	}
+	// stream_ncch: leave partitions on disk; build_CIA/CCI stream via fileBacked
 	// Make CCI
 	if(set->common.outFormat == CCI){
 		result = build_CCI(set);
