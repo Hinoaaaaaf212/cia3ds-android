@@ -1,5 +1,6 @@
 #include "lib.h"
 #include "version.h"
+#include <errno.h>
 
 // Private Constants
 static const u32 DEFAULT_STACK_SIZE = 0x1000;
@@ -15,6 +16,36 @@ void PrintNeedsArg(char *arg);
 void PrintArgInvalid(char *arg);
 void PrintArgReqParam(char *arg, u32 paramNum);
 void PrintNoNeedParam(char *arg);
+
+// Returns true if [begin,end) is a non-empty string that parses entirely as a
+// number (decimal, or 0x-prefixed hex). end == NULL means "to end of string".
+static bool IsWholeNumber(const char *begin, const char *end)
+{
+	if (begin == NULL || *begin == '\0')
+		return false;
+	if (end == NULL)
+		end = begin + strlen(begin);
+	if (end <= begin)
+		return false;
+	char *parsed_end = NULL;
+	errno = 0;
+	strtoul(begin, &parsed_end, 0);
+	return errno == 0 && parsed_end == end;
+}
+
+// Returns true if the prefix [path,end) of a "<path>:<index>[:<id>]" argument
+// names an existing file.
+static bool PathPrefixExists(const char *path, const char *end)
+{
+	size_t len = (size_t)(end - path);
+	char *tmp = calloc(len + 1, sizeof(char));
+	if (tmp == NULL)
+		return false;
+	memcpy(tmp, path, len);
+	bool exists = AssertFile(tmp);
+	free(tmp);
+	return exists;
+}
 
 int ParseArgs(int argc, char *argv[], user_settings *set)
 {
@@ -649,17 +680,40 @@ int SetArgument(int argc, int i, char *argv[], user_settings *set)
 			PrintArgReqParam(argv[i], 1);
 			return USR_ARG_REQ_PARAM;
 		}
-		int count = 0;
-		char *pos = argv[i + 1];
-		while ((pos = strstr(pos + 1, ":")))
-			count++;
 
-		pos = argv[i + 1];
-		while (count-- > 1)
-			pos = strstr(pos + 1, ":");
+		/*
+		 * Accepted forms:
+		 *   <path>:<index>        (CCI, or CIA with a random content id)
+		 *   <path>:<index>:<id>   (CIA)
+		 * <path> may itself contain ':' (e.g. "C:\..."), so split from the
+		 * right instead of counting colons: prefer treating the last two
+		 * fields as <index>:<id>, otherwise the last field as <index>. A field
+		 * only qualifies if it parses as a whole number, and if the two-field
+		 * split names a file that does not exist while the one-field split
+		 * does, the one-field split wins.
+		 */
+		char *arg = argv[i + 1];
+		char *last = strrchr(arg, ':');
+		char *prev = NULL;
+		for (char *p = arg; last && p < last; p++) {
+			if (*p == ':')
+				prev = p;
+		}
 
-		if (!pos || strlen(pos) < 2) {
-			fprintf(stderr, "[SETTING ERROR] Bad argument '%s %s', correct format:\n", argv[i], argv[i + 1]);
+		char *sep = NULL;    // ':' terminating <path>
+		char *id_str = NULL; // start of <id>, or NULL if not given
+		if (prev && IsWholeNumber(prev + 1, last) && IsWholeNumber(last + 1, NULL)) {
+			sep = prev;
+			id_str = last + 1;
+		}
+		if (last && IsWholeNumber(last + 1, NULL)
+			&& (sep == NULL || (!PathPrefixExists(arg, sep) && PathPrefixExists(arg, last)))) {
+			sep = last;
+			id_str = NULL;
+		}
+
+		if (sep == NULL) {
+			fprintf(stderr, "[SETTING ERROR] Bad argument '%s %s', correct format:\n", argv[i], arg);
 			fprintf(stderr, "	%s <CONTENT PATH>:<INDEX>\n", argv[i]);
 			fprintf(stderr, "  If generating a CIA, then use the format:\n");
 			fprintf(stderr, "	%s <CONTENT PATH>:<INDEX>:<ID>\n", argv[i]);
@@ -667,10 +721,10 @@ int SetArgument(int argc, int i, char *argv[], user_settings *set)
 		}
 
 		/* Getting Content Index */
-		u16 content_index = strtol((char*)(pos + 1), NULL, 0);
+		u16 content_index = strtol(sep + 1, NULL, 0);
 
 		/* Storing Content Filepath */
-		u32 path_len = (u32)(pos - argv[i + 1]) + 1;
+		u32 path_len = (u32)(sep - arg) + 1;
 
 		if (set->common.contentPath[content_index] != NULL) {
 			fprintf(stderr, "[SETTING ERROR] Content %d is already specified\n", content_index);
@@ -681,7 +735,7 @@ int SetArgument(int argc, int i, char *argv[], user_settings *set)
 			fprintf(stderr, "[SETTING ERROR] Not enough memory\n");
 			return USR_MEM_ERROR;
 		}
-		strncpy(set->common.contentPath[content_index], argv[i + 1], path_len - 1);
+		strncpy(set->common.contentPath[content_index], arg, path_len - 1);
 		if (!AssertFile(set->common.contentPath[content_index])) {
 			fprintf(stderr, "[SETTING ERROR] '%s' could not be opened\n", set->common.contentPath[content_index]);
 			return USR_BAD_ARG;
@@ -689,9 +743,8 @@ int SetArgument(int argc, int i, char *argv[], user_settings *set)
 		set->common.contentSize[content_index] = GetFileSize64(set->common.contentPath[content_index]);
 
 		/* Get ContentID for CIA gen */
-		char *pos2 = strstr(pos + 1, ":");
-		if (pos2)
-			set->cia.contentId[content_index] = strtoul((pos2 + 1), NULL, 0);
+		if (id_str)
+			set->cia.contentId[content_index] = strtoul(id_str, NULL, 0);
 
 		/* Return Next Arg Pos*/
 		return 2;
